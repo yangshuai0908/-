@@ -60,10 +60,13 @@ export function useRequirementAnalysis(
   const showBatchModal = ref(false);
   const batchReviewer = ref("测试员");
   const batchOnlyClear = ref(true);
+  const batchComment = ref("");
   const batchConfirming = ref(false);
 
   function openBatchConfirmModal() {
     batchReviewer.value = "测试员";
+    batchOnlyClear.value = true;
+    batchComment.value = "";
     showBatchModal.value = true;
   }
 
@@ -72,15 +75,24 @@ export function useRequirementAnalysis(
       message.warning("请填写核对人姓名");
       return;
     }
+    if (!batchOnlyClear.value && !batchComment.value.trim()) {
+      message.warning("取消「仅确认无疑问」时，请填写统一澄清结论");
+      return;
+    }
     batchConfirming.value = true;
     try {
       const previousStamp = stamp(analysis.value);
       const res = await api.batchConfirmRequirementPoints(requirementId, {
         reviewer: batchReviewer.value.trim(),
         onlyClear: batchOnlyClear.value,
+        comment: batchOnlyClear.value ? undefined : batchComment.value.trim(),
       });
       writeAnalysis(res.analysis, previousStamp);
-      message.success(`已批量确认 ${res.confirmedCount} 个测试点；带待澄清问题的测试点需逐项填写澄清结论。`);
+      message.success(
+        batchOnlyClear.value
+          ? `已批量确认 ${res.confirmedCount} 个无疑问测试点；带待澄清问题的测试点需逐项填写澄清结论。`
+          : `已批量确认 ${res.confirmedCount} 个测试点（含带疑问点，已记录统一澄清结论）。`,
+      );
       showBatchModal.value = false;
       bumpRequirements();
     } catch (err) {
@@ -502,6 +514,7 @@ export function useRequirementAnalysis(
     showBatchModal,
     batchReviewer,
     batchOnlyClear,
+    batchComment,
     batchConfirming,
     openBatchConfirmModal,
     executeBatchConfirm,

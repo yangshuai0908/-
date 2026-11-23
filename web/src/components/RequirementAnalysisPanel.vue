@@ -36,6 +36,7 @@ const {
   showBatchModal,
   batchReviewer,
   batchOnlyClear,
+  batchComment,
   batchConfirming,
   openBatchConfirmModal,
   executeBatchConfirm,
@@ -183,6 +184,7 @@ const {
       v-model:show="showBatchModal"
       v-model:reviewer="batchReviewer"
       v-model:only-clear="batchOnlyClear"
+      v-model:comment="batchComment"
       :loading="batchConfirming"
       @confirm="executeBatchConfirm"
     />

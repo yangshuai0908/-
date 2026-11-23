@@ -100,10 +100,13 @@ export function expandScenarios(point: TestPoint): Scenario[] {
       return out.slice(0, 8)
     }
     case 'permission': {
-      const out = [
-        mk('authorized', '有权访问', '需求允许的角色或数据范围执行操作，验证被允许'),
-        mk('denied', '越权拒绝', '需求禁止的角色或他人数据执行同一操作，验证被拒绝'),
-      ]
+      // 按测试点目标意图派生场景，避免给「只验证有权」的点生成越权案、给「只验证被限制」的点生成有权案
+      const deny = /越权|限制|拒绝|禁止|不能|不得|无权|非本人/.test(point.objective)
+      const allow = /成功|允许|有权|可查询|可以|正常/.test(point.objective)
+      const both = (deny && allow) || (!deny && !allow)
+      const out: Scenario[] = []
+      if (both || allow) out.push(mk('authorized', '有权访问', `按「${point.objective}」构造被允许的角色或数据范围操作，验证被允许`))
+      if (both || deny) out.push(mk('denied', '越权拒绝', `按「${point.objective}」构造被禁止的角色或他人数据操作，验证被拒绝`))
       if (/未登录|登录态|token|令牌/i.test(point.objective + point.evidence.map((e) => e.quote).join('\n'))) {
         out.push(mk('unauthenticated', '未登录访问', '未登录或登录态失效时访问，验证需求规定的拦截行为'))
       }
@@ -149,6 +152,33 @@ export function batchFillSchema(scenarios: Scenario[], chunks: Chunk[]) {
   })
 }
 
+/**
+ * 渲染证据：测试点窄引用之外，确定性补入「被预期引用的拒绝/提示原句」。
+ * 补入内容逐字来自条款、可被原文定位校验，避免窄引用（如只引阈值）把本可判定的预期误报为依据不足。
+ */
+function renderEvidence(scenario: Scenario, fill: ScenarioFill, point: TestPoint, chunks: Chunk[]): { reqId: string; quote: string }[] {
+  const base = point.evidence.map(({ reqId, quote }) => ({ reqId, quote }))
+  const reqIds = new Set(base.map((e) => e.reqId))
+  const expectedText = `${fill.expected} ${fill.message ?? ''}`
+  const wantPrompt = /提示/.test(expectedText)
+  const wantReject = REJECT_KINDS.has(scenario.kind)
+  const extra: { reqId: string; quote: string }[] = []
+  const seen = (reqId: string, quote: string) =>
+    base.some((e) => e.reqId === reqId && e.quote === quote) || extra.some((e) => e.reqId === reqId && e.quote === quote)
+  for (const chunk of chunks) {
+    if (!reqIds.has(chunk.reqId)) continue
+    for (const raw of chunk.text.split(/(?<=[。！？；\n])/)) {
+      const sentence = raw.trim()
+      if (!sentence) continue
+      const hit = (fill.message && sentence.includes(fill.message))
+        || (wantPrompt && /提示/.test(sentence))
+        || (wantReject && /拒绝|不予受理|驳回/.test(sentence))
+      if (hit && !seen(chunk.reqId, sentence)) extra.push({ reqId: chunk.reqId, quote: sentence })
+    }
+  }
+  return [...base, ...extra]
+}
+
 /** 模板渲染：步骤与预期的结构由骨架决定，模型只提供槽位数据 */
 export function renderScenarioCase(
   scenario: Scenario,
@@ -165,7 +195,7 @@ export function renderScenarioCase(
   const assumptions = [...fill.assumptions]
   if (clarify) assumptions.push(`「${point.title}」缺少明确临界值，待业务确认后补充边界用例`)
   else if (!fill.message && REJECT_KINDS.has(scenario.kind)) assumptions.push('需求未明确该场景的具体提示内容，待业务确认')
-  const evidence = verifyEvidenceList(ctx.chunks, point.evidence.map(({ reqId, quote }) => ({ reqId, quote })))
+  const evidence = verifyEvidenceList(ctx.chunks, renderEvidence(scenario, fill, point, ctx.chunks))
   const module = tailPath(ctx.chunks.find((chunk) => chunk.reqId === point.evidence[0]?.reqId)?.sectionPath ?? '')
   return {
     id: genId('case'),

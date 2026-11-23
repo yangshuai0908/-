@@ -41,8 +41,14 @@ test('场景骨架是纯函数：同一测试点展开结果完全一致', () =>
   const noConstraint = expandScenarios(point({ evidence: [{ reqId: 'REQ-001', quote: '支持账号登录', matched: true }] }))
   assert.deepEqual(noConstraint.map(s => s.kind), ['boundary-clarify'])
 
-  const permission = expandScenarios(point({ category: 'permission', objective: '验证未登录不能查询' }))
-  assert.deepEqual(permission.map(s => s.kind), ['authorized', 'denied', 'unauthenticated'])
+  const authorized = expandScenarios(point({ category: 'permission', objective: '验证普通用户查询本人记录成功' }))
+  assert.deepEqual(authorized.map(s => s.kind), ['authorized'])
+  const denied = expandScenarios(point({ category: 'permission', objective: '验证普通用户查询非本人记录被限制' }))
+  assert.deepEqual(denied.map(s => s.kind), ['denied'])
+  const matrix = expandScenarios(point({ category: 'permission', objective: '验证普通用户可查询本人记录，越权查询被拒绝' }))
+  assert.deepEqual(matrix.map(s => s.kind), ['authorized', 'denied'])
+  const unauth = expandScenarios(point({ category: 'permission', objective: '验证未登录不能查询' }))
+  assert.deepEqual(unauth.map(s => s.kind), ['denied', 'unauthenticated'])
 
   const normal = expandScenarios(point({ category: 'normal', methods: ['状态迁移'] }))
   assert.deepEqual(normal.map(s => s.kind), ['main-flow', 'state-transition'])
@@ -96,6 +102,20 @@ test('模板渲染：结构由骨架决定，缺提示自动记缺口，待澄�
   assert.equal(rendered.category, 'boundary')
   assert.equal(rendered.module, '数量')
   assert.equal(rendered.evidence[0].quoteMatch, 'exact')
+
+  // 窄引用补证据：边界点只引阈值时，渲染确定性补入条款里的拒绝/提示原句，避免可判定预期被误报依据不足
+  const narrowPoint = point({ evidence: [{ reqId: 'REQ-001', quote: '查询数量必须 <= 20', matched: true }] })
+  const aboveUpper = expandScenarios(narrowPoint).find(s => s.kind === 'above-upper')!
+  const narrowCase = renderScenarioCase(aboveUpper, { ...fill, scenarioId: aboveUpper.id }, narrowPoint, { projectId: 'p', requirementId: 'r', chunks, titleSuffix: aboveUpper.label })
+  assert(narrowCase.evidence.length > 1)
+  assert(narrowCase.evidence.every(e => e.quoteMatch === 'exact'))
+  assert(narrowCase.evidence.some(e => e.quote.includes('提示')))
+
+  // 主流程预期含「不提示」时，同样补入条款提示原句，消除 unsupportedPrompt 误报
+  const normalNarrow = point({ category: 'normal', evidence: [{ reqId: 'REQ-001', quote: '查询数量必须 <= 20', matched: true }] })
+  const mainFlow = expandScenarios(normalNarrow)[0]
+  const mainCase = renderScenarioCase(mainFlow, { ...fill, scenarioId: mainFlow.id, steps: ['提交 20 条查询'], expected: '查询被受理，不提示超出上限', message: '' }, normalNarrow, { projectId: 'p', requirementId: 'r', chunks })
+  assert(mainCase.evidence.some(e => e.quote.includes('提示') && e.quoteMatch === 'exact'))
 
   const noMessage = renderScenarioCase(scenarios[1], { ...fill, message: '' }, point(), { projectId: 'p', requirementId: 'r', chunks })
   assert(noMessage.assumptions.some(a => a.includes('具体提示内容')))

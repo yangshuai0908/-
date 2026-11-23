@@ -24,11 +24,11 @@ npm run dev
 
 ### 关于模型配置
 
-`.env.example` 默认给的是智谱 GLM 的配置，开箱可用。换别的服务只改三行（`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`），代码不用动。
+当前项目实际使用 **DeepSeek-flash**（`OPENAI_BASE_URL=https://api.deepseek.com/v1`、`OPENAI_MODEL=deepseek-flash`），配置写在根目录 `.env`。换其他 OpenAI 兼容服务只改三行（`OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL`），代码不用动。
 
-有一个坑要注意：**`glm-4.5-air` 默认开启思考模式**，思考内容会占用 `max_tokens` 并明显拖慢响应。实测同样的请求，关思考 0.8 秒返回，不关则十几秒且容易因为 token 被思考吃光而截断。所以默认设了 `LLM_THINKING=disabled`。如果你需要模型做更强的推理，把它改成 `enabled` 即可。
+有一个坑要注意：**`deepseek-flash` 默认开启思考模式**，思考内容会占用输出额度并明显拖慢响应。代码里 `server/src/llm/client.ts` 已对 DeepSeek 接口显式传入 thinking 参数，默认设 `LLM_THINKING=disabled` 关掉思考；如果你需要模型做更强的推理，把它改成 `enabled` 即可。
 
-另外智谱的 `temperature` 合法区间是 (0,1)，填 0 不会被拒绝但行为不可控，配置里统一用 0.2。
+不同服务对 `temperature` 的合法区间要求不同，参数不当会导致输出行为不可控；当前统一用 `0.2`，具体范围以所用服务文档为准。
 
 首次打开时点「载入示例需求」，仓库自带一份带接口定义、字段限制、权限规则的样例需求（`demo-data/requirement-v1.md`），另有一份变更版 `requirement-v2.md` 用于验证变更对比。
 

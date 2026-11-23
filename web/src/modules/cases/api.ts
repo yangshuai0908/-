@@ -1,8 +1,10 @@
-import type { TestCase } from '../../types'
+import type { CoverageReport, TestCase } from '../../types'
 
 export function createCasesApi(request: <T>(url: string, init?: RequestInit) => Promise<T>) {
   return {
     listCases: (requirementId: string) => request<TestCase[]>(`/api/requirements/${requirementId}/cases`),
+    caseCoverage: (requirementId: string) =>
+      request<CoverageReport>(`/api/requirements/${requirementId}/cases/coverage`),
     estimateGenerate: (requirementId: string, categories: string[]) =>
       request<{ chunks: number; points: number; scenarios: number; pending: number; excluded: number; batches: number; calls: number }>('/api/generate/estimate', {
         method: 'POST',

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { NButton } from "naive-ui";
-import type { EvidenceState, TestCase } from "../../../types";
-import { AGENT_ROLES } from "../../../types";
+import { computed } from "vue";
+import type { CoverageReport, EvidenceState, TestCase } from "../../../types";
+import { AGENT_ROLES, CATEGORY_LABEL } from "../../../types";
 import { cases } from "../../../stores/workspace";
 
 const props = defineProps<{
@@ -13,6 +14,7 @@ const props = defineProps<{
   };
   gapRows: { text: string; caseIds: string[]; reqIds: string[] }[];
   duplicates: { caseIds: string[]; title: string; reason: string; score: number }[];
+  coverage: CoverageReport | null;
 }>();
 
 const emit = defineEmits<{
@@ -20,6 +22,19 @@ const emit = defineEmits<{
   (e: "merge-group", caseIds: string[]): void;
   (e: "merge-all"): void;
 }>();
+
+const coverageGaps = computed(() => {
+  const report = props.coverage;
+  if (!report || !report.summary.scenarios) return [];
+  return report.points
+    .map((point) => ({
+      ...point,
+      gaps: point.scenarios.filter(
+        (s) => s.status === "missing" || s.status === "stale",
+      ),
+    }))
+    .filter((point) => point.gaps.length > 0);
+});
 
 
 function findAndOpenCase(id: string) {
@@ -32,10 +47,25 @@ function findAndOpenCase(id: string) {
 
 <template>
   <details class="quality-summary">
-    <summary>质量提示<span>待人工评审 {{ stats.pending }}</span><span v-if="stats.byState.unknown">依据不足 {{ stats.byState.unknown }}</span><span v-if="stats.byState.inferred">推导待确认 {{ stats.byState.inferred }}</span><span v-if="gapRows.length">待澄清 {{ gapRows.length }}</span><span v-if="duplicates.length">近似重复 {{ duplicates.length }} 组</span></summary>
+    <summary>质量提示<span>待人工评审 {{ stats.pending }}</span><span v-if="stats.byState.unknown">依据不足 {{ stats.byState.unknown }}</span><span v-if="stats.byState.inferred">推导待确认 {{ stats.byState.inferred }}</span><span v-if="gapRows.length">待澄清 {{ gapRows.length }}</span><span v-if="duplicates.length">近似重复 {{ duplicates.length }} 组</span><span v-if="coverage && coverage.summary.scenarios">场景覆盖 {{ coverage.summary.covered }}/{{ coverage.summary.scenarios }}</span><span v-if="coverage && coverage.summary.stale">分析已更新 {{ coverage.summary.stale }}</span></summary>
     <div class="quality-details">
       <p>模型检查由{{ AGENT_ROLES.reviewer.label }}负责，最终结论由人工评审。</p>
       <p v-if="stats.pendingValidation">{{ stats.pendingValidation }} 条依据需要重新校验，可在列表的“更多操作”中执行。</p>
+      <details v-if="coverageGaps.length">
+        <summary>场景覆盖缺口（{{ coverageGaps.length }} 个测试点未覆盖完整，含被合并/去重的场景）</summary>
+        <ul>
+          <li v-for="point in coverageGaps" :key="point.pointId" class="coverage-point">
+            <div class="coverage-title">{{ point.title }}<span class="coverage-cat">{{ CATEGORY_LABEL[point.category] }}</span></div>
+            <ul class="coverage-scenarios">
+              <li v-for="s in point.gaps" :key="s.scenarioId">
+                <span :class="['coverage-state', `is-${s.status}`]">{{ s.status === 'stale' ? '待重生成' : '缺失' }}</span>
+                {{ s.label }}<span v-if="s.reason" class="coverage-reason">· {{ s.reason }}</span>
+              </li>
+            </ul>
+          </li>
+        </ul>
+        <p class="coverage-hint">缺口可按场景类型重新生成补齐；生成时的自动合并与去重也会在此说明原因。</p>
+      </details>
       <details v-if="gapRows.length"><summary>需求待澄清（{{ gapRows.length }}）</summary><ul><li v-for="(gap, i) in gapRows" :key="i">{{ gap.text }} <span v-if="gap.reqIds.length">· {{ gap.reqIds.join('、') }}</span><n-button v-for="id in gap.caseIds.slice(0, 3)" :key="id" size="tiny" text @click="findAndOpenCase(id)">查看用例</n-button></li></ul></details>
       <details v-if="duplicates.length">
         <summary class="dup-summary">
@@ -56,7 +86,7 @@ function findAndOpenCase(id: string) {
           </li>
         </ul>
       </details>
-      <p v-if="!gapRows.length && !duplicates.length">当前没有待澄清项或近似重复提示，仍需核对具体步骤与预期。</p>
+      <p v-if="!gapRows.length && !duplicates.length && !coverageGaps.length">当前没有待澄清项、近似重复或场景覆盖缺口，仍需核对具体步骤与预期。</p>
     </div>
   </details>
 </template>
@@ -75,4 +105,13 @@ li .n-button { margin-left: 8px; }
 .dup-item { margin: 6px 0; list-style-type: none; }
 .dup-info { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 500; }
 .dup-cases { margin-top: 2px; }
+.coverage-point { margin: 6px 0; list-style-type: none; }
+.coverage-title { font-weight: 500; }
+.coverage-cat { margin-left: 8px; font-size: 11px; color: var(--tp-text-dim); border: 1px solid var(--tp-border); border-radius: 3px; padding: 0 4px; }
+.coverage-scenarios { padding-left: 18px; }
+.coverage-state { display: inline-block; margin-right: 6px; font-size: 11px; border-radius: 3px; padding: 0 4px; }
+.coverage-state.is-missing { color: #b85858; border: 1px solid #b85858; }
+.coverage-state.is-stale { color: #a7792f; border: 1px solid #a7792f; }
+.coverage-reason { color: var(--tp-text-dim); }
+.coverage-hint { color: var(--tp-text-dim); }
 </style>

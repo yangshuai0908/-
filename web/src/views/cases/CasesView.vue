@@ -17,6 +17,7 @@ const {
   selected,
   estimate,
   duplicates,
+  coverage,
   filterCategory,
   filterState,
   filterVerdict,
@@ -72,6 +73,7 @@ const {
         :stats="stats"
         :gap-rows="gapRows"
         :duplicates="duplicates"
+        :coverage="coverage"
         @open-editor="openEditor"
         @merge-group="mergeDuplicateGroup"
         @merge-all="mergeAllDuplicates"

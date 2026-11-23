@@ -236,6 +236,37 @@ export interface WorkflowTrace {
   }[]
 }
 
+export interface ScenarioCoverage {
+  scenarioId: string
+  kind: string
+  label: string
+  status: 'covered' | 'stale' | 'missing'
+  caseIds: string[]
+  reason?: string
+}
+
+export interface PointCoverage {
+  pointId: string
+  title: string
+  category: Category
+  scenarios: ScenarioCoverage[]
+}
+
+export interface CoverageReport {
+  analysisId: string
+  analysisUpdatedAt: string
+  summary: {
+    points: number
+    scenarios: number
+    covered: number
+    stale: number
+    missing: number
+    pending: number
+    excluded: number
+  }
+  points: PointCoverage[]
+}
+
 export interface ChangeItem {
   type: 'added' | 'removed' | 'modified' | 'unchanged'
   sectionPath: string

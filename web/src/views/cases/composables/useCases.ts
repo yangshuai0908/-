@@ -19,6 +19,7 @@ import {
   evidenceStateOf,
   type Assessment,
   type Category,
+  type CoverageReport,
   type EvidenceState,
   type Priority,
   type RevisionCost,
@@ -52,6 +53,7 @@ export function useCases() {
   const duplicates = ref<
     { caseIds: string[]; title: string; reason: string; score: number }[]
   >([]);
+  const coverage = ref<CoverageReport | null>(null);
 
   const filterCategory = ref<"all" | Category>("all");
   const filterState = ref<"all" | EvidenceState>("all");
@@ -80,10 +82,21 @@ export function useCases() {
       cases.value = [];
       duplicates.value = [];
       estimate.value = null;
+      coverage.value = null;
       loading.value = false;
       return;
     }
     loading.value = true;
+    // 覆盖报告在需求尚未分析时接口会 400，静默置空即可，不打断用例列表
+    void api
+      .caseCoverage(requirementId)
+      .then((report) => {
+        if (requestId === casesRequestId && requirementId === currentRequirementId.value)
+          coverage.value = report;
+      })
+      .catch(() => {
+        if (requestId === casesRequestId) coverage.value = null;
+      });
     try {
       const [items, repeated, plan] = await Promise.all([
         api.listCases(requirementId),
@@ -590,6 +603,7 @@ export function useCases() {
     estimate,
     assumptions,
     duplicates,
+    coverage,
     filterCategory,
     filterState,
     filterVerdict,

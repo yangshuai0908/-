@@ -8,7 +8,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:3001',
+        target: process.env.API_PROXY ?? 'http://127.0.0.1:3001',
         changeOrigin: true,
         // SSE 必须关闭缓冲，否则前端收不到逐条推送
         configure: (proxy) => {

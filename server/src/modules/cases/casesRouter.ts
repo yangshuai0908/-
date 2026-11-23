@@ -1,5 +1,6 @@
 import { createCase, updateCase } from './service.js'
-import { traceWorkflow } from '../../trace.js'
+import { buildCoverageReport } from './coverage.js'
+import { traceWorkflow, tracesOf } from '../../trace.js'
 import { Router } from 'express'
 import * as repo from '../../store/fsRepo.js'
 import {
@@ -30,6 +31,13 @@ casesRouter.get('/requirements/:rid/cases', (req, res) => {
   const rid = String(req.params.rid)
   requireRequirement(rid)
   res.json(casesOf(rid))
+})
+
+casesRouter.get('/requirements/:rid/cases/coverage', (req, res) => {
+  const rid = String(req.params.rid)
+  const requirement = requireRequirement(rid)
+  if (!requirement.analysis) throw new AppError('请先分析需求并人工确认测试点', 400)
+  res.json(buildCoverageReport(requirement, casesOf(rid), tracesOf(rid)))
 })
 
 casesRouter.get('/requirements/:rid/duplicates', (req, res) => {
