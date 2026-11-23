@@ -1,5 +1,6 @@
 import type { z } from 'zod'
 import { chat, streamChat, type ChatMessage } from './client.js'
+import { cacheKey, readCache, writeCache } from './cache.js'
 import { config } from '../config.js'
 import { traceStep } from '../trace.js'
 
@@ -76,9 +77,28 @@ export class JsonParseError extends Error {
 export async function chatJson<T>(
   schema: z.ZodType<T>,
   messages: ChatMessage[],
-  opts: { label?: string; temperature?: number; maxTokens?: number; jsonMode?: boolean } = {},
+  opts: { label?: string; temperature?: number; maxTokens?: number; jsonMode?: boolean; noCache?: boolean } = {},
 ): Promise<T> {
   const label = opts.label ?? '模型输出'
+  const key = opts.noCache || !config.llmCache ? null : cacheKey({
+    model: config.model, baseUrl: config.baseUrl, messages,
+    temperature: opts.temperature ?? config.temperature,
+    maxTokens: opts.maxTokens ?? config.maxTokens,
+    thinking: config.thinking, jsonMode: opts.jsonMode ?? false,
+  })
+  if (key) {
+    const hit = readCache(key)
+    if (hit !== null) {
+      const cached = extractJson(hit)
+      if (cached !== null) {
+        const parsed = schema.safeParse(cached)
+        if (parsed.success) {
+          await traceStep(`${label}：命中内容缓存`, { key }, () => parsed.data)
+          return parsed.data
+        }
+      }
+    }
+  }
   const raw = await traceStep(`${label}：模型请求`, {
     messages, model: config.model, temperature: opts.temperature ?? config.temperature,
     maxTokens: opts.maxTokens ?? config.maxTokens, thinking: config.thinking,
@@ -87,7 +107,10 @@ export async function chatJson<T>(
   const first = extractJson(raw)
   if (first !== null) {
     const parsed = schema.safeParse(first)
-    if (parsed.success) return parsed.data
+    if (parsed.success) {
+      if (key) writeCache(key, raw, config.model)
+      return parsed.data
+    }
   }
 
   const detail = first === null ? (opts.jsonMode ? jsonSyntaxIssue(raw) : '未找到合法 JSON 对象') : formatIssues(schema, first)
@@ -122,7 +145,10 @@ export async function chatJson<T>(
   const second = extractJson(repaired)
   if (second !== null) {
     const parsed = schema.safeParse(second)
-    if (parsed.success) return parsed.data
+    if (parsed.success) {
+      if (key) writeCache(key, repaired, config.model)
+      return parsed.data
+    }
     throw new JsonParseError(formatIssues(schema, second), repaired)
   }
   throw new JsonParseError('修复后仍未返回合法 JSON', repaired)

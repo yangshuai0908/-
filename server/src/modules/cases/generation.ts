@@ -1,19 +1,19 @@
 import { config } from '../../config.js'
 import { chatJson } from '../../llm/json.js'
-import { buildGenerateMessages } from '../../prompts/generate.js'
+import { buildScenarioMessages } from '../../prompts/scenario.js'
 import { prescreenDuplicates, mergeTwoCases } from '../review/index.js'
 import * as repo from '../../store/fsRepo.js'
-import { LlmGenerateResultSchema, type RequirementVersion, type TestCase, type TestPoint } from '../../store/schema.js'
+import type { RequirementVersion, TestCase } from '../../store/schema.js'
 import { traceStep, traceWorkflow } from '../../trace.js'
 import { AppError, CATEGORIES, type Category } from '../../utils.js'
 import { assessCases } from '../../validate/caseSupport.js'
 import { overallState, isEvidenceMatchingChunk } from '../../validate/evidence.js'
-import { buildCase } from './buildCase.js'
+import { batchFillSchema, expandScenarios, renderScenarioCase, type Scenario } from './scenarios.js'
 
 const generating = new Set<string>()
 const BATCH_SIZE = 4
 const CONCURRENCY = 2
-export const GENERATION_VERSION = 'confirmed-points-v1'
+export const GENERATION_VERSION = 'scenario-matrix-v1'
 
 class SimpleMutex {
   private queue = Promise.resolve()
@@ -27,11 +27,26 @@ class SimpleMutex {
 export function generationPlan(requirement: RequirementVersion, categories: Category[]) {
   const all = requirement.analysis?.sections.flatMap(section => section.points) ?? []
   const points = all.filter(point => point.status === 'confirmed' && point.review?.actor === 'human' && point.review.reviewer.trim() && categories.includes(point.category))
-  const batches = CATEGORIES.filter(category => categories.includes(category)).flatMap(category => {
-    const selected = points.filter(point => point.category === category)
-    return Array.from({ length: Math.ceil(selected.length / BATCH_SIZE) }, (_, index) => selected.slice(index * BATCH_SIZE, (index + 1) * BATCH_SIZE))
-  })
-  return { points, batches, pending: all.filter(point => point.status === 'pending' || (point.status === 'confirmed' && (point.review?.actor !== 'human' || !point.review.reviewer.trim()))).length, excluded: all.filter(point => point.status === 'excluded').length }
+  const scenariosByPoint = new Map(points.map(point => [point.id, expandScenarios(point)]))
+  // 同一测试点的场景骨架不进不同批次，保证一个点的用例在同一上下文里填充
+  const batches: Scenario[][] = []
+  for (const category of CATEGORIES.filter(category => categories.includes(category))) {
+    let current: Scenario[] = []
+    for (const point of points.filter(point => point.category === category)) {
+      const group = scenariosByPoint.get(point.id)!
+      if (current.length && current.length + group.length > BATCH_SIZE) {
+        batches.push(current)
+        current = []
+      }
+      current.push(...group)
+      if (current.length >= BATCH_SIZE) {
+        batches.push(current)
+        current = []
+      }
+    }
+    if (current.length) batches.push(current)
+  }
+  return { points, scenariosByPoint, scenarios: batches.flat(), batches, pending: all.filter(point => point.status === 'pending' || (point.status === 'confirmed' && (point.review?.actor !== 'human' || !point.review.reviewer.trim()))).length, excluded: all.filter(point => point.status === 'excluded').length }
 }
 
 export interface GenerationEvent {
@@ -80,53 +95,42 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
         type: 'progress',
         done: 0,
         total: totalBatches,
-        message: `开始按已确认测试点生成用例（共 ${totalBatches} 批，并发加速）…`,
+        message: `已确认测试点展开为 ${plan.scenarios.length} 个场景骨架，共 ${totalBatches} 批填充（并发加速）…`,
       })
 
-      const processBatch = async (index: number, points: TestPoint[]) => {
+      const pointById = new Map(plan.points.map(point => [point.id, point]))
+      const processBatch = async (index: number, batch: Scenario[]) => {
         try {
+          const points = [...new Set(batch.map(scenario => scenario.pointId))].map(id => pointById.get(id)!)
           const ids = new Set(points.flatMap(point => point.evidence.map(e => e.reqId)))
           const chunks = snapshot.chunks.filter(chunk => ids.has(chunk.reqId))
-          const currentCandidates = overwrite ? created : [...baseline, ...created]
-          const existingTitles = currentCandidates.map(c => c.title)
 
-          const result = await traceStep(`第 ${index + 1} 批：生成与校验`, { points }, async () => {
-            return await chatJson(LlmGenerateResultSchema, buildGenerateMessages({
-              chunks, points, apiList: snapshot.apiList, category: points[0].category,
-              existingTitles,
-            }), { label: `测试点生成-${index + 1}`, jsonMode: true })
+          const result = await traceStep(`第 ${index + 1} 批：场景槽位填充`, { scenarios: batch }, async () => {
+            return await chatJson(batchFillSchema(batch, chunks), buildScenarioMessages({
+              chunks, points, scenarios: batch, apiList: snapshot.apiList,
+            }), { label: `场景填充-${index + 1}`, jsonMode: true })
           })
 
-          const built = await traceStep(`第 ${index + 1} 批：检查测试点关联和原文引用`, result, () => {
-            const cases = result.cases.map(raw => {
-              const point = points.find(point => point.id === raw.testPointId)
-              if (!point) throw new AppError(`用例「${raw.title}」没有有效的已确认测试点关联`)
-              if (!raw.title.trim() || !raw.steps?.some(step => step.trim()) || !raw.expected?.some(expected => expected.trim())) {
-                throw new AppError('生成用例缺少标题、步骤或预期结果，未保存本批候选')
-              }
-              const pointReqIds = new Set(point.evidence.map(e => e.reqId))
-              if (!raw.evidence?.length || raw.evidence.some(e => !pointReqIds.has(e.reqId) || !snapshot.chunks.some(chunk => chunk.reqId === e.reqId && isEvidenceMatchingChunk(chunk, e.quote)))) {
-                if (point.evidence?.length) {
-                  raw.evidence = point.evidence.map(e => ({ reqId: e.reqId, quote: e.quote }))
-                } else {
-                  throw new AppError(`用例「${raw.title}」的引用未逐字匹配原文`)
-                }
-              }
-              const builtCase = buildCase(raw, { projectId: snapshot.projectId, requirementId: snapshot.id, category: point.category, chunks: snapshot.chunks })
-              builtCase.category = point.category
-              builtCase.businessConfirmation = point.review?.clarification || (point.questions.length ? point.review?.comment || '' : '')
-              builtCase.businessConfirmer = builtCase.businessConfirmation ? point.review!.reviewer : ''
-              builtCase.assumptions = [...new Set([...builtCase.assumptions, ...point.questions])]
-              builtCase.source = {
+          const built = await traceStep(`第 ${index + 1} 批：按骨架确定性渲染用例`, result, () => {
+            return batch.map(scenario => {
+              const fill = result.scenarios.find(item => item.scenarioId === scenario.id)!
+              const point = pointById.get(scenario.pointId)!
+              const siblings = plan.scenariosByPoint.get(point.id)!
+              const testCase = renderScenarioCase(scenario, fill, point, {
+                projectId: snapshot.projectId, requirementId: snapshot.id, chunks: snapshot.chunks,
+                titleSuffix: siblings.length > 1 ? scenario.label : '',
+              })
+              testCase.businessConfirmation = point.review?.clarification || (point.questions.length ? point.review?.comment || '' : '')
+              testCase.businessConfirmer = testCase.businessConfirmation ? point.review!.reviewer : ''
+              testCase.assumptions = [...new Set([...testCase.assumptions, ...point.questions])]
+              testCase.source = {
                 runId: run.id, analysisId: snapshot.analysis!.id, analysisUpdatedAt: snapshot.analysis!.updatedAt,
                 pointId: point.id, title: point.title, objective: point.objective,
                 reqIds: point.evidence.map(e => e.reqId),
+                scenarioId: scenario.id, scenarioKind: scenario.kind,
               }
-              return builtCase
+              return testCase
             })
-            const missing = points.filter(point => !cases.some(c => c.source?.pointId === point.id))
-            if (missing.length) throw new AppError(`本批遗漏测试点：${missing.map(point => point.title).join('、')}`)
-            return cases
           })
 
           const checked = await traceStep(`第 ${index + 1} 批：语义复核测试条件与预期`, built, () => assessCases(built, snapshot.chunks, true))
@@ -191,8 +195,8 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
 
       // 按受控并发执行各批次
       const pool = new Set<Promise<void>>()
-      for (const [index, points] of plan.batches.entries()) {
-        const p: Promise<void> = processBatch(index, points).finally(() => pool.delete(p))
+      for (const [index, batch] of plan.batches.entries()) {
+        const p: Promise<void> = processBatch(index, batch).finally(() => pool.delete(p))
         pool.add(p)
         if (pool.size >= CONCURRENCY) {
           await Promise.race(pool)

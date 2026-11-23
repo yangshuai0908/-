@@ -69,13 +69,14 @@ export interface AnalysisStreamEvent {
   currentChunks?: { reqId: string; sectionPath: string }[]
   pointsCount?: number
   totalPoints?: number
+  reusedSections?: number
   message?: string
   analysis?: RequirementAnalysis
 }
 
 export async function streamAnalyzeRequirement(
   requirementId: string,
-  payload: { replaceAnalysisId?: string } = {},
+  payload: { replaceAnalysisId?: string; force?: boolean } = {},
   onEvent: (evt: AnalysisStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<RequirementAnalysis> {

@@ -37,7 +37,7 @@ type ModelOutput = (chunks: Chunk[], request: ModelRequest) => { content: string
 async function startHarness(port = 0) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'testpilot-analysis-'))
   const originalConfig = { ...config }
-  Object.assign(config, { dataDir: directory, apiKey: 'local-fixture-only', baseUrl: 'http://127.0.0.1:1', model: 'local-analysis-fixture' })
+  Object.assign(config, { dataDir: directory, apiKey: 'local-fixture-only', baseUrl: 'http://127.0.0.1:1', model: 'local-analysis-fixture', llmCache: false, inheritAnalysis: false })
   const originalFetch = globalThis.fetch
   let modelCalls = 0
   let failModel = false
@@ -224,21 +224,22 @@ if (process.argv.includes('--preview')) {
     await t.test('重新分析失败不丢失人工修改', async () => {
       const before = (await request(route)).data
       harness.setFailure(true)
-      const failed = await request(route, 'POST', { replaceAnalysisId: analysis.id })
+      const failed = await request(route, 'POST', { replaceAnalysisId: analysis.id, force: true })
       assert.equal(failed.status, 400)
       assert.deepEqual((await request(route)).data, before)
       harness.setFailure(false)
     })
-    await t.test('分析期间拒绝重复分析和编辑，成功后旧id失效', async () => {
+    await t.test('分析期间拒绝重复分析和编辑，成功后旧id失效', async (t) => {
+      t.after(() => harness.release())
       harness.hold()
-      const pending = request(route, 'POST', { replaceAnalysisId: analysis.id })
+      const pending = request(route, 'POST', { replaceAnalysisId: analysis.id, force: true })
       let conflict
       for (let i = 0; i < 10; i++) {
         conflict = await request(`${route}/points/${pointId}`, 'PATCH', patch)
         if (conflict.status === 409) break
       }
       assert.equal(conflict?.status, 409)
-      assert.equal((await request(route, 'POST', { replaceAnalysisId: analysis.id })).status, 409)
+      assert.equal((await request(route, 'POST', { replaceAnalysisId: analysis.id, force: true })).status, 409)
       harness.release()
       const refreshed = await pending
       assert.equal(refreshed.status, 200)
@@ -303,7 +304,7 @@ if (process.argv.includes('--preview')) {
       t.after(() => harness.setOutput())
       const before = (await request(route)).data
       harness.setOutput(input => ({ content: JSON.stringify({ sections: [...input.map(sectionOf), { reqId: 'REQ-999', points: [], questions: ['越界占位'], notTestableReason: '' }] }) }))
-      const failed = await request(route, 'POST', { replaceAnalysisId: before.id })
+      const failed = await request(route, 'POST', { replaceAnalysisId: before.id, force: true })
       assert.equal(failed.status, 500)
       assert.match(failed.data.error, /收到批次外条款 REQ-999/)
       assert.deepEqual((await request(route)).data, before)
@@ -318,7 +319,7 @@ if (process.argv.includes('--preview')) {
       for (const target of [freshRoute, route]) {
         const before = (await request(target)).data
         const calls = harness.calls()
-        const failed = await request(target, 'POST', before ? { replaceAnalysisId: before.id } : {})
+        const failed = await request(target, 'POST', before ? { replaceAnalysisId: before.id, force: true } : {})
         assert.equal(failed.status, 500)
         assert.match(failed.data.error, /修复后仍未返回合法 JSON/)
         assert.equal(harness.calls() - calls, 3)
@@ -332,13 +333,13 @@ if (process.argv.includes('--preview')) {
       const before = (await request(route)).data
       harness.setOutput(() => ({ content: '{"sections":[]}' }))
       let calls = harness.calls()
-      const invalid = await request(route, 'POST', { replaceAnalysisId: before.id })
+      const invalid = await request(route, 'POST', { replaceAnalysisId: before.id, force: true })
       assert.equal(invalid.status, 500)
       assert.match(invalid.data.error, /遗漏条款/)
       assert.equal(harness.calls() - calls, 2)
       harness.setOutput(() => ({ content: '{"sections":[', finish_reason: 'length' }))
       calls = harness.calls()
-      const truncated = await request(route, 'POST', { replaceAnalysisId: before.id })
+      const truncated = await request(route, 'POST', { replaceAnalysisId: before.id, force: true })
       assert.equal(truncated.status, 502)
       assert.match(truncated.data.error, /截断/)
       assert.equal(harness.calls() - calls, 1)

@@ -35,6 +35,8 @@ export interface TestPoint {
   status: 'pending' | 'confirmed' | 'excluded'
   methods?: string[]
   rationale?: string
+  /** 模型原始输出指纹；重分析结果一致时据此保留人工修改与确认状态 */
+  sourceHash?: string
   review?: { actor: 'human' | 'agent'; reviewer: string; at: string; comment: string; clarification?: string }
 }
 
@@ -43,6 +45,8 @@ export interface RequirementAnalysisSection {
   points: TestPoint[]
   questions: string[]
   notTestableReason: string
+  /** 条款内容指纹；与当前条款一致则重分析时直接复用本节 */
+  inputHash?: string
 }
 
 export interface RequirementAnalysis {
@@ -64,6 +68,16 @@ export interface RequirementVersion {
   analysis?: RequirementAnalysis
   riskScans?: RiskScan[]
   createdAt: string
+}
+
+/** 上传新版本时从上一版本继承分析结果的统计（随上传响应返回，不落库） */
+export interface AnalysisInheritance {
+  fromId: string
+  fromLabel: string
+  sections: number
+  points: number
+  confirmed: number
+  totalChunks: number
 }
 
 export interface RiskIssue {
@@ -191,6 +205,8 @@ export interface TestCase {
     title: string
     objective: string
     reqIds: string[]
+    scenarioId?: string
+    scenarioKind?: string
   }
   updatedAt: string
 }

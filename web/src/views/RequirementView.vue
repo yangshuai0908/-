@@ -245,6 +245,13 @@ async function save() {
     message.success(
       `已保存 ${created.label}，共 ${created.chunks.length} 条条款`,
     );
+    if (created.inheritance) {
+      const inh = created.inheritance;
+      message.info(
+        `已从「${inh.fromLabel}」继承 ${inh.sections}/${inh.totalChunks} 个未变条款的分析（${inh.points} 个测试点，其中 ${inh.confirmed} 个保留人工确认）；其余条款点击「分析需求」补齐。`,
+        { duration: 8000 },
+      );
+    }
     if (currentProjectId.value !== projectId) return;
     if (!requirements.value.some((r) => r.id === created.id))
       requirements.value.push(created);

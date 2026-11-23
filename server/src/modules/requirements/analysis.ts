@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { z } from 'zod'
 import { config } from '../../config.js'
 import { chatJson } from '../../llm/json.js'
@@ -16,7 +17,7 @@ import { traceStep, traceWorkflow } from '../../trace.js'
 import { isEvidenceMatchingChunk } from '../../validate/evidence.js'
 
 const SourceSchema = AnalysisEvidenceSchema.omit({ matched: true })
-const LlmPointSchema = TestPointSchema.omit({ id: true, status: true, review: true }).extend({
+const LlmPointSchema = TestPointSchema.omit({ id: true, status: true, review: true, sourceHash: true }).extend({
   evidence: z.array(SourceSchema).min(1).max(8),
 })
 export const AnalysisResultSchema = z.object({
@@ -32,6 +33,25 @@ export const TestPointPatchSchema = LlmPointSchema.extend({
 
 const analyzing = new Set<string>()
 const BATCH_SIZE = 3
+
+function sha256(value: unknown): string {
+  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')
+}
+
+/** 条款内容指纹：不含 reqId（跨版本编号会变），含 prompt 版本与补充上下文 */
+export function sectionInputHash(chunk: Chunk, context?: unknown): string {
+  return sha256({ v: 'analysis-v2-batch-scope', sectionPath: chunk.sectionPath, text: chunk.text, context: context ?? null })
+}
+
+/** 模型原始输出指纹：重分析结果与上次一致时，按它找回被人工编辑/确认过的测试点 */
+export function pointSourceHash(point: z.infer<typeof LlmPointSchema>): string {
+  return sha256({
+    v: 'point-v1',
+    title: point.title, category: point.category, objective: point.objective,
+    questions: point.questions, methods: point.methods ?? [], rationale: point.rationale ?? '',
+    evidence: point.evidence.map(({ reqId, quote }) => ({ reqId, quote })),
+  })
+}
 
 export function assertAnalysisIdle(requirementId: string): void {
   if (analyzing.has(requirementId)) throw new AppError('该需求正在分析，请完成后再处理扫描建议', 409)
@@ -77,6 +97,7 @@ export function buildAnalysisSections(result: unknown, chunks: Chunk[]): Require
         ...point,
         id: genId('point'),
         status: 'pending' as const,
+        sourceHash: pointSourceHash(point),
         evidence: locateAnalysisEvidence(chunks, point.evidence),
       })),
     }
@@ -119,7 +140,21 @@ export interface AnalysisProgressEvent {
   currentChunks?: { reqId: string; sectionPath: string }[]
   pointsCount?: number
   totalPoints?: number
+  reusedSections?: number
   message?: string
+}
+
+/** 模型给出与上次相同的测试点时，保留人工编辑/确认后的版本，而不是重置为待确认 */
+function reuseConfirmedPoints(
+  fresh: RequirementAnalysis['sections'][number],
+  existing: RequirementAnalysis['sections'][number] | undefined,
+): RequirementAnalysis['sections'][number] {
+  if (!existing) return fresh
+  const byHash = new Map(existing.points.filter((point) => point.sourceHash).map((point) => [point.sourceHash!, point]))
+  return {
+    ...fresh,
+    points: fresh.points.map((point) => byHash.get(point.sourceHash!) ?? point),
+  }
 }
 
 export async function analyzeRequirement(
@@ -127,6 +162,7 @@ export async function analyzeRequirement(
   replaceAnalysisId?: string,
   context?: unknown,
   onProgress?: (event: AnalysisProgressEvent) => void,
+  force = false,
 ): Promise<RequirementAnalysis> {
   if (analyzing.has(requirementId)) throw new AppError('该需求正在分析，请稍后再试', 409)
   const requirement = repo.findById<RequirementVersion>('requirements', requirementId)
@@ -134,28 +170,49 @@ export async function analyzeRequirement(
   if (replaceAnalysisId && requirement.analysis?.id !== replaceAnalysisId) {
     throw new AppError('需求分析已更新，请刷新后再操作', 409)
   }
-  if (requirement.analysis && !replaceAnalysisId) return requirement.analysis
+  // 继承来的分析可能只覆盖部分条款；只有全部条款都可复用时才免分析直接返回
+  if (requirement.analysis && !replaceAnalysisId && requirement.chunks.every(chunk =>
+    requirement.analysis!.sections.some(section => section.reqId === chunk.reqId && section.inputHash === sectionInputHash(chunk, context)),
+  )) return requirement.analysis
   analyzing.add(requirementId)
   try {
-    return await traceWorkflow('analysis', requirement, { requirement, replaceAnalysisId, promptVersion: 'analysis-v2-batch-scope' }, async () => {
-      await traceStep('检查分析输入', { chunks: requirement.chunks.length }, () => {
+    return await traceWorkflow('analysis', requirement, { requirement, replaceAnalysisId, force, promptVersion: 'analysis-v2-batch-scope' }, async () => {
+      const existing = requirement.analysis
+      const { fresh, stale } = await traceStep('检查分析输入与可复用条款', { chunks: requirement.chunks.length, force }, () => {
         if (!requirement.chunks.length || requirement.chunks.every(chunk => !chunk.text.trim())) throw new AppError('需求没有可分析的条款')
         if (!config.apiKey) throw new AppError('未配置模型密钥，请先配置 OPENAI_API_KEY')
-        const count = Math.ceil(requirement.chunks.length / BATCH_SIZE)
+        const fresh = new Map<string, RequirementAnalysis['sections'][number]>()
+        if (existing && !force) {
+          for (const section of existing.sections) {
+            const chunk = requirement.chunks.find(c => c.reqId === section.reqId)
+            if (chunk && section.inputHash === sectionInputHash(chunk, context)) fresh.set(section.reqId, section)
+          }
+        }
+        const stale = requirement.chunks.filter(chunk => !fresh.has(chunk.reqId))
+        const count = Math.ceil(stale.length / BATCH_SIZE)
         if (count > config.maxLlmCalls) throw new AppError(`本次分析需要 ${count} 批，请拆分需求文档后重试`)
+        return { fresh, stale }
       })
-      const totalBatches = Math.ceil(requirement.chunks.length / BATCH_SIZE)
+      const reusedPoints = [...fresh.values()].flatMap(section => section.points).length
+      if (!stale.length && existing) {
+        onProgress?.({ type: 'done', totalBatches: 0, totalPoints: reusedPoints, reusedSections: fresh.size, message: `全部 ${fresh.size} 个条款内容未变化，直接复用已有分析（保留人工确认），未调用模型` })
+        return existing
+      }
+      const totalBatches = Math.ceil(stale.length / BATCH_SIZE)
       onProgress?.({
         type: 'start',
         totalBatches,
-        totalPoints: 0,
-        message: `开始需求分析，共 ${requirement.chunks.length} 个条款，分为 ${totalBatches} 批深度分析`,
+        totalPoints: reusedPoints,
+        reusedSections: fresh.size,
+        message: fresh.size
+          ? `${fresh.size} 个条款未变化，复用已有分析（保留 ${reusedPoints} 个测试点的人工结果）；其余 ${stale.length} 个条款分 ${totalBatches} 批深度分析`
+          : `开始需求分析，共 ${stale.length} 个条款，分为 ${totalBatches} 批深度分析`,
       })
-      const sections: RequirementAnalysis['sections'] = []
+      const analyzed = new Map<string, RequirementAnalysis['sections'][number]>()
       let totalExtractedPoints = 0
-      for (let i = 0; i < requirement.chunks.length; i += BATCH_SIZE) {
+      for (let i = 0; i < stale.length; i += BATCH_SIZE) {
         const batchIndex = Math.floor(i / BATCH_SIZE) + 1
-        const chunks = requirement.chunks.slice(i, i + BATCH_SIZE)
+        const chunks = stale.slice(i, i + BATCH_SIZE)
         onProgress?.({
           type: 'batch_start',
           batch: batchIndex,
@@ -169,11 +226,16 @@ export async function analyzeRequirement(
         const result = await traceStep(`分析第 ${batchIndex} 批条款`, { chunks }, () => chatJson(batchSchema(chunks), messages, {
           label: `需求分析-第${batchIndex}批`,
           jsonMode: true,
+          noCache: force,
         }))
-        const batchSections = buildAnalysisSections(result, chunks)
+        const batchSections = buildAnalysisSections(result, chunks).map((section) => {
+          const chunk = chunks.find(c => c.reqId === section.reqId)!
+          const merged = reuseConfirmedPoints(section, existing?.sections.find(s => s.reqId === section.reqId))
+          return { ...merged, inputHash: sectionInputHash(chunk, context) }
+        })
         const batchPointsCount = batchSections.flatMap(s => s.points).length
         totalExtractedPoints += batchPointsCount
-        sections.push(...batchSections)
+        for (const section of batchSections) analyzed.set(section.reqId, section)
         onProgress?.({
           type: 'batch_done',
           batch: batchIndex,
@@ -186,14 +248,17 @@ export async function analyzeRequirement(
       const current = repo.findById<RequirementVersion>('requirements', requirementId)
       if (!current) throw new AppError('需求版本已删除，本次分析未保存', 404)
       if (current.analysis?.id !== requirement.analysis?.id) throw new AppError('需求分析已更新，本次结果未覆盖保存', 409)
+      const sections = requirement.chunks.map(chunk => analyzed.get(chunk.reqId) ?? fresh.get(chunk.reqId)!)
       const timestamp = nowIso()
       const analysis: RequirementAnalysis = { id: genId('analysis'), createdAt: timestamp, updatedAt: timestamp, sections }
       await traceStep('保存需求分析', { analysis }, () => repo.update<RequirementVersion>('requirements', requirementId, { analysis }))
+      const totalPoints = sections.flatMap(section => section.points).length
       onProgress?.({
         type: 'done',
         totalBatches,
-        totalPoints: totalExtractedPoints,
-        message: `需求分析全部完成，共提炼 ${totalExtractedPoints} 个测试点`,
+        totalPoints,
+        reusedSections: fresh.size,
+        message: `需求分析全部完成，共 ${totalPoints} 个测试点${fresh.size ? `（其中 ${fresh.size} 个条款复用已有结果）` : ''}`,
       })
       return analysis
     })

@@ -41,6 +41,7 @@ export function useCases() {
   const estimate = ref<{
     chunks: number;
     points: number;
+    scenarios: number;
     pending: number;
     excluded: number;
     batches: number;

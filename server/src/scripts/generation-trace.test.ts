@@ -20,7 +20,7 @@ test('confirmed-point generation and persisted failure tracing', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'testpilot-trace-'))
   const previous = { ...config }
   const originalFetch = globalThis.fetch
-  Object.assign(config, { dataDir: directory, apiKey: 'test-secret-never-record', model: 'fixture-model', baseUrl: 'http://fixture.invalid' })
+  Object.assign(config, { dataDir: directory, apiKey: 'test-secret-never-record', model: 'fixture-model', baseUrl: 'http://fixture.invalid', llmCache: false })
   let mode = 'success'
   let calls = 0
   const prompts: string[] = []
@@ -60,10 +60,19 @@ test('confirmed-point generation and persisted failure tracing', async t => {
       })))
       return Response.json({ choices: [{ message: { content: JSON.stringify({ items }) } }] })
     }
-    const points = JSON.parse(prompt.match(/【本批已确认测试点[^\n]*\n([^\n]+)/)![1]) as TestPoint[]
-    if (mode === 'partial' && points[0].category === 'boundary') return new Response('边界批次模拟失败', { status: 400 })
-    const raw = { testPointId: mode === 'invalid-point' ? 'excluded' : points[0].id, title: points[0].id + '查询超过上限被拒绝', steps: ['提交 21 条查询'], expected: ['拒绝查询'], evidence: [{ reqId: 'REQ-001', quote }] }
-    return Response.json({ choices: [{ message: { content: JSON.stringify({ cases: [raw], assumptions: [], uncovered: [] }) } }] })
+    const scenarios = JSON.parse(prompt.match(/【场景骨架[^\n]*\n([^\n]+)/)![1]) as { id: string; pointId: string; category: string; kind: string; constraint?: { expectedValue: number } }[]
+    if (mode === 'partial' && scenarios[0].category === 'boundary') return new Response('边界批次模拟失败', { status: 400 })
+    const fills = scenarios.map(s => ({
+      scenarioId: mode === 'invalid-point' ? 'excluded' : s.id,
+      subject: '查询数量',
+      input: `提交 ${s.constraint?.expectedValue ?? 21} 条查询`,
+      action: '提交查询请求',
+      expected: '拒绝查询',
+      message: '',
+      steps: ['提交 21 条查询'],
+      assumptions: [],
+    }))
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ scenarios: fills, assumptions: [], uncovered: [] }) } }] })
   }
   try {
     await t.test('no confirmed points blocks generation without changing old cases', async () => {
@@ -97,6 +106,8 @@ test('confirmed-point generation and persisted failure tracing', async t => {
       const generated = repo.all<TestCase>('cases').find(c => c.source)!
       assert.equal(generated.source!.pointId, 'confirmed')
       assert.equal(generated.source!.runId, result.runId)
+      assert.equal(generated.source!.scenarioId, 'confirmed:main-flow')
+      assert.equal(generated.source!.scenarioKind, 'main-flow')
       assert(!prompts[0].includes('pending查询规则'))
       assert(!prompts[0].includes('excluded查询规则'))
       const trace = tracesOf(requirement.id)[0]

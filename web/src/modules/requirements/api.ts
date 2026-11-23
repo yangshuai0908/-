@@ -1,4 +1,4 @@
-import type { AnalysisEvidence, Chunk, Project, RequirementAnalysis, RequirementVersion, RiskResolutionInput, TestPoint, WorkflowTrace } from '../../types'
+import type { AnalysisEvidence, AnalysisInheritance, Chunk, Project, RequirementAnalysis, RequirementVersion, RiskResolutionInput, TestPoint, WorkflowTrace } from '../../types'
 
 export type TestPointUpdate = Pick<TestPoint, 'title' | 'category' | 'objective' | 'questions' | 'status'> & {
   analysisId: string
@@ -27,7 +27,7 @@ export function createRequirementsApi(request: <T>(url: string, init?: RequestIn
       projectId: string,
       payload: { label: string; rawText?: string; fileName?: string; fileBase64?: string; base64?: string; sourceType?: string },
     ) =>
-      request<RequirementVersion>(`/api/projects/${projectId}/requirements`, {
+      request<RequirementVersion & { inheritance?: AnalysisInheritance | null }>(`/api/projects/${projectId}/requirements`, {
         method: 'POST',
         body: JSON.stringify({
           ...payload,
@@ -45,7 +45,7 @@ export function createRequirementsApi(request: <T>(url: string, init?: RequestIn
       }),
     getRequirementAnalysis: (id: string) =>
       request<RequirementAnalysis | null>(`/api/requirements/${id}/analysis`),
-    analyzeRequirement: (id: string, payload: { replaceAnalysisId?: string } = {}) =>
+    analyzeRequirement: (id: string, payload: { replaceAnalysisId?: string; force?: boolean } = {}) =>
       request<RequirementAnalysis>(`/api/requirements/${id}/analysis`, {
         method: 'POST',
         body: JSON.stringify(payload),

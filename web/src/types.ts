@@ -77,3 +77,20 @@ export const GAP_STATUS_LABEL: Record<GapStatus, string> = {
   confirmed_ok: '已确认无遗漏',
   missing: '存在遗漏',
 }
+
+export const SCENARIO_KIND_LABEL: Record<string, string> = {
+  'main-flow': '主流程',
+  'state-transition': '状态流转',
+  'reject-path': '业务拒绝',
+  'at-lower': '下界值',
+  'below-lower': '下界-1',
+  'at-upper': '上界值',
+  'above-upper': '上界+1',
+  'count-before': '限制前一次',
+  'count-at': '限制临界次',
+  'count-after': '超限一次',
+  'boundary-clarify': '边界待澄清',
+  'authorized': '有权访问',
+  'denied': '越权拒绝',
+  'unauthenticated': '未登录访问',
+}

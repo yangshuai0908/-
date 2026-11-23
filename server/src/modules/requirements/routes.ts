@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { analyzeRequirement, updateTestPoint, batchConfirmPoints } from './analysis.js'
+import { inheritAnalysis } from './inherit.js'
 import { resolveRisk } from './risks.js'
 import { tracesOf, type WorkflowTrace } from '../../trace.js'
 import fs from 'node:fs'
@@ -114,6 +115,8 @@ requirementsRouter.post('/projects/:id/requirements', async (req, res) => {
   if (!chunks.length) throw new AppError('未能从文档中提取到有效条款，请检查格式')
 
   const apiList = extractApis(text)
+  const prev = config.inheritAnalysis ? requirementsOf(projectId).filter((r) => r.analysis).at(-1) : undefined
+  const inherited = prev ? inheritAnalysis(prev, chunks) : null
   const version: RequirementVersion = {
     id: genId('req'),
     projectId,
@@ -122,10 +125,11 @@ requirementsRouter.post('/projects/:id/requirements', async (req, res) => {
     rawText: text,
     chunks,
     apiList,
+    analysis: inherited?.analysis,
     createdAt: nowIso(),
   }
   repo.insert('requirements', version)
-  res.json(version)
+  res.json({ ...version, inheritance: inherited?.stats ?? null })
 })
 
 requirementsRouter.get('/requirements/:id/analysis', (req, res) => {
@@ -139,9 +143,9 @@ requirementsRouter.post('/requirements/:id/risk-scans/:scanId/issues/:issueId/re
 })
 
 requirementsRouter.post('/requirements/:id/analysis', async (req, res) => {
-  const parsed = z.object({ replaceAnalysisId: z.string().min(1).optional() }).safeParse(req.body ?? {})
+  const parsed = z.object({ replaceAnalysisId: z.string().min(1).optional(), force: z.boolean().optional() }).safeParse(req.body ?? {})
   if (!parsed.success) throw new AppError('需求分析参数不正确')
-  res.json(await analyzeRequirement(String(req.params.id), parsed.data.replaceAnalysisId))
+  res.json(await analyzeRequirement(String(req.params.id), parsed.data.replaceAnalysisId, undefined, undefined, Boolean(parsed.data.force)))
 })
 
 requirementsRouter.post('/requirements/:id/analysis/stream', async (req, res) => {
@@ -157,13 +161,14 @@ requirementsRouter.post('/requirements/:id/analysis/stream', async (req, res) =>
     }
   }
   try {
-    const parsed = z.object({ replaceAnalysisId: z.string().min(1).optional() }).safeParse(req.body ?? {})
+    const parsed = z.object({ replaceAnalysisId: z.string().min(1).optional(), force: z.boolean().optional() }).safeParse(req.body ?? {})
     if (!parsed.success) throw new AppError('需求分析参数不正确')
     const analysis = await analyzeRequirement(
       String(req.params.id),
       parsed.data.replaceAnalysisId,
       undefined,
       (evt) => send(evt),
+      Boolean(parsed.data.force),
     )
     send({ type: 'finish', analysis })
   } catch (error) {

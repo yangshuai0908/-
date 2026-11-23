@@ -4,7 +4,7 @@ export function createCasesApi(request: <T>(url: string, init?: RequestInit) => 
   return {
     listCases: (requirementId: string) => request<TestCase[]>(`/api/requirements/${requirementId}/cases`),
     estimateGenerate: (requirementId: string, categories: string[]) =>
-      request<{ chunks: number; points: number; pending: number; excluded: number; batches: number; calls: number }>('/api/generate/estimate', {
+      request<{ chunks: number; points: number; scenarios: number; pending: number; excluded: number; batches: number; calls: number }>('/api/generate/estimate', {
         method: 'POST',
         body: JSON.stringify({ requirementId, categories }),
       }),

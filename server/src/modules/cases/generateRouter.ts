@@ -29,5 +29,5 @@ generateRouter.post('/generate/estimate', (req, res) => {
   const requirement = repo.findById<RequirementVersion>('requirements', String(req.body?.requirementId ?? ''))
   if (!requirement) throw new AppError('需求版本不存在', 404)
   const plan = generationPlan(requirement, categoriesOf(req.body?.categories))
-  res.json({ chunks: requirement.chunks.length, points: plan.points.length, pending: plan.pending, excluded: plan.excluded, batches: plan.batches.length, calls: plan.batches.length })
+  res.json({ chunks: requirement.chunks.length, points: plan.points.length, scenarios: plan.scenarios.length, pending: plan.pending, excluded: plan.excluded, batches: plan.batches.length, calls: plan.batches.length })
 })

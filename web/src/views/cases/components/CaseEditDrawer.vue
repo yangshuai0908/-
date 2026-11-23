@@ -17,6 +17,7 @@ import {
   AGENT_ROLES,
   CATEGORY_LABEL,
   COST_LABEL,
+  SCENARIO_KIND_LABEL,
   STATE_COLOR,
   STATE_LABEL,
   VERDICT_LABEL,
@@ -243,6 +244,9 @@ async function recheck(c: TestCase) {
         <template v-if="props.caseItem.source">
           <strong>来源测试点：{{ props.caseItem.source.title }}</strong>
           <div>{{ props.caseItem.source.objective }}</div>
+          <div v-if="props.caseItem.source.scenarioKind" class="tiny-text">
+            场景骨架：{{ SCENARIO_KIND_LABEL[props.caseItem.source.scenarioKind] ?? props.caseItem.source.scenarioKind }}（由规则确定性展开，结构不随模型措辞变化）
+          </div>
           <div class="tiny-text text-dim">
             {{ props.caseItem.source.reqIds.join("、") }} ·
             {{ props.caseItem.source.pointId }}

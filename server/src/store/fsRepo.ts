@@ -17,7 +17,7 @@ function fileOf(col: Collection): string {
  * 会抛 EPERM。这种情况不能直接失败（生成过程中四类场景并行保存，一失败整批就断），
  * 退化为直接覆盖写——本地单用户场景下数据量很小，最坏只会丢一次写入，下次保存会补上。
  */
-function writeAtomic(file: string, content: string): void {
+export function writeAtomic(file: string, content: string): void {
   const tmp = `${file}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}.tmp`
   try {
     fs.writeFileSync(tmp, content, 'utf8')

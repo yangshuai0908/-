@@ -27,6 +27,8 @@ export const TestPointSchema = z.object({
   status: z.enum(['pending', 'confirmed', 'excluded']),
   methods: z.array(z.string().trim().min(1).max(100)).max(8).optional(),
   rationale: z.string().trim().max(1000).optional(),
+  /** 模型原始输出的指纹；重分析时模型给出相同结果就保留人工修改与确认状态 */
+  sourceHash: z.string().optional(),
   review: z.object({
     actor: z.enum(['human', 'agent']),
     reviewer: z.string(),
@@ -42,6 +44,8 @@ export const RequirementAnalysisSectionSchema = z.object({
   points: z.array(TestPointSchema).max(60),
   questions: z.array(z.string().trim().min(1).max(500)).max(30),
   notTestableReason: z.string().trim().max(1000),
+  /** 产生本节约分析时的条款内容指纹；与当前条款一致则可直接复用（保留人工确认） */
+  inputHash: z.string().optional(),
 })
 export const RequirementAnalysisSchema = z.object({
   id: z.string(),
@@ -180,6 +184,8 @@ export const TestCaseSchema = z.object({
     title: z.string(),
     objective: z.string(),
     reqIds: z.array(z.string()),
+    scenarioId: z.string().optional(),
+    scenarioKind: z.string().optional(),
   }).optional(),
   updatedAt: z.string(),
 })
@@ -207,6 +213,27 @@ export const LlmGenerateResultSchema = z.object({
   uncovered: z.array(z.string()).default([]),
 })
 export type LlmGenerateResult = z.infer<typeof LlmGenerateResultSchema>
+
+/** 场景骨架由规则矩阵确定性展开，模型只填充这些语义槽位 */
+export const ScenarioFillSchema = z.object({
+  scenarioId: z.string().min(1),
+  precondition: z.string().trim().max(500).default(''),
+  subject: z.string().trim().min(1).max(100),
+  input: z.string().trim().min(1).max(500),
+  action: z.string().trim().min(1).max(300),
+  expected: z.string().trim().min(1).max(500),
+  message: z.string().trim().max(300).default(''),
+  steps: z.array(z.string().trim().min(1).max(300)).max(12).optional(),
+  assumptions: z.array(z.string().trim().min(1).max(500)).max(10).default([]),
+})
+export type ScenarioFill = z.infer<typeof ScenarioFillSchema>
+
+export const LlmScenarioResultSchema = z.object({
+  scenarios: z.array(ScenarioFillSchema).max(40),
+  assumptions: z.array(z.string().trim().min(1).max(500)).max(20).default([]),
+  uncovered: z.array(z.string().trim().min(1).max(500)).max(20).default([]),
+})
+export type LlmScenarioResult = z.infer<typeof LlmScenarioResultSchema>
 
 export const ChangeItemSchema = z.object({
   type: z.enum(['added', 'removed', 'modified', 'unchanged']),

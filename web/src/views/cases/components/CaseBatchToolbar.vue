@@ -22,6 +22,7 @@ const props = defineProps<{
   estimate: {
     chunks: number;
     points: number;
+    scenarios: number;
     pending: number;
     excluded: number;
     batches: number;
@@ -89,7 +90,7 @@ const canGenerate = computed(
       <summary>生成设置与来源</summary>
       <div class="settings-content">
         <n-checkbox-group :value="props.selected" @update:value="emit('update:selected', $event as Category[])"><n-checkbox v-for="c in ALL" :key="c" :value="c" :label="CATEGORY_LABEL[c]" /></n-checkbox-group>
-        <p>仅使用人工确认的测试点。{{ linkedPointCount }}/{{ confirmedPoints.length }} 个已有用例来源关联；来源关联不代表验证通过或完整覆盖。<span v-if="estimate">待确认 {{ estimate.pending }} 个、已排除 {{ estimate.excluded }} 个，不参与生成。</span></p>
+        <p>仅使用人工确认的测试点。{{ linkedPointCount }}/{{ confirmedPoints.length }} 个已有用例来源关联；来源关联不代表验证通过或完整覆盖。<span v-if="estimate">确认点将确定性展开为 {{ estimate.scenarios }} 个场景骨架；待确认 {{ estimate.pending }} 个、已排除 {{ estimate.excluded }} 个，不参与生成。</span></p>
         <p v-if="!confirmedPoints.length">请先在测试点页确认生成范围。</p>
         <details v-if="pointLinks.length" class="point-matrix">
           <summary>查看测试点与用例对应</summary>

@@ -1,8 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mergeTwoCases, mergeCaseGroup, mergeAllDuplicates } from '../modules/review/dedupe.js'
-import type { TestCase } from '../store/schema.js'
+import type { Evidence, TestCase } from '../store/schema.js'
 import { blankAssessment } from '../store/schema.js'
+
+function ev(reqId: string, quote: string): Evidence {
+  return { reqId, quote, state: 'explicit', quoteMatch: 'exact', conditionSupport: 'explicit', expectedSupport: 'explicit', score: 1, reason: '固定样本' }
+}
 
 function makeCase(id: string, title: string, opts: Partial<TestCase> = {}): TestCase {
   return {
@@ -16,7 +20,7 @@ function makeCase(id: string, title: string, opts: Partial<TestCase> = {}): Test
     precondition: '已注册账号',
     steps: ['提交账号密码', '观察结果'],
     expected: ['登录成功', '进入系统'],
-    evidence: [{ reqId: 'REQ-001', quote: '支持账号登录' }],
+    evidence: [ev('REQ-001', '支持账号登录')],
     assumptions: ['假设网络通畅'],
     businessConfirmation: '',
     businessConfirmer: '',
@@ -39,12 +43,12 @@ function makeCase(id: string, title: string, opts: Partial<TestCase> = {}): Test
 test('duplicate case merging', async (t) => {
   await t.test('mergeTwoCases combines evidence, assumptions, steps and point references', () => {
     const caseA = makeCase('c1', '登录-正常-使用账号登录成功跳转用户中心首页', {
-      evidence: [{ reqId: 'REQ-001', quote: '支持账号登录' }],
+      evidence: [ev('REQ-001', '支持账号登录')],
       steps: ['在登录页输入账号密码', '点击登录按钮'],
       expected: ['登录成功', '跳转到首页'],
     })
     const caseB = makeCase('c2', '登录-正常-使用绑定手机号登录成功跳转用户中心首页', {
-      evidence: [{ reqId: 'REQ-002', quote: '支持绑定手机号登录' }],
+      evidence: [ev('REQ-002', '支持绑定手机号登录')],
       steps: ['在登录页输入手机号和密码', '点击登录按钮'],
       expected: ['登录成功', '跳转到首页'],
       assumptions: ['手机号已激活'],
@@ -63,11 +67,11 @@ test('duplicate case merging', async (t) => {
 
   await t.test('mergeCaseGroup picks the best primary case and identifies removedIds', () => {
     const case1 = makeCase('c1', '账号状态变更-正常-停用账号后该账号已签发token立即失效', {
-      evidence: [{ reqId: 'REQ-010', quote: '停用账号后已签发token失效' }],
+      evidence: [ev('REQ-010', '停用账号后已签发token失效')],
     })
     const case2 = makeCase('c2', '账号状态变更-正常-停用账号后该账号多个已签发token均失效', {
       priority: 'P0',
-      evidence: [{ reqId: 'REQ-010', quote: '停用账号后已签发token失效' }],
+      evidence: [ev('REQ-010', '停用账号后已签发token失效')],
     })
 
     const result = mergeCaseGroup([case1, case2], ['c1', 'c2'])
@@ -79,17 +83,17 @@ test('duplicate case merging', async (t) => {
 
   await t.test('mergeAllDuplicates processes all candidates above threshold', () => {
     const case1 = makeCase('c1', '登录-正常-使用账号登录成功跳转用户中心首页', {
-      evidence: [{ reqId: 'REQ-001', quote: '支持账号登录' }],
+      evidence: [ev('REQ-001', '支持账号登录')],
     })
     const case2 = makeCase('c2', '登录-正常-使用绑定手机号登录成功跳转用户中心首页', {
-      evidence: [{ reqId: 'REQ-001', quote: '支持账号登录' }],
+      evidence: [ev('REQ-001', '支持账号登录')],
     })
     const case3 = makeCase('c3', '无关用例-正常-修改密码成功', {
       module: '安全中心',
       precondition: '已登录',
       steps: ['输入旧密码', '输入新密码'],
       expected: ['修改成功'],
-      evidence: [{ reqId: 'REQ-003', quote: '修改密码' }],
+      evidence: [ev('REQ-003', '修改密码')],
     })
 
     const result = mergeAllDuplicates([case1, case2, case3], 0.7)

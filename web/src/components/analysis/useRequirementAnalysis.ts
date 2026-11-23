@@ -186,7 +186,7 @@ export function useRequirementAnalysis(
     try {
       const result = await streamAnalyzeRequirement(
         requirementId,
-        replaceAnalysisId ? { replaceAnalysisId } : {},
+        replaceAnalysisId ? { replaceAnalysisId, force: true } : {},
         (evt) => {
           if (!analysisProgress.value) return;
           if (evt.batch !== undefined) analysisProgress.value.batch = evt.batch;
@@ -228,7 +228,7 @@ export function useRequirementAnalysis(
     }
     confirmation = dialog.warning({
       title: "重新分析需求",
-      content: `重新分析「${versionLabel}」将调用真实模型，可能耗时较长。成功后会替换现有测试点，人工修改及确认／排除状态不会保留；失败则保留原分析。此操作不修改已有用例。是否继续？`,
+      content: `重新分析「${versionLabel}」将调用真实模型，可能耗时较长。条款内容未变化、或模型给出与上次相同结果的测试点，会保留人工修改及确认／排除状态；有实质变化的测试点重置为待确认。失败则保留原分析。此操作不修改已有用例。是否继续？`,
       positiveText: "确认重新分析",
       negativeText: "取消",
       onPositiveClick: () => {

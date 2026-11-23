@@ -68,10 +68,71 @@ interface ActionChip {
   role?: AgentRole;
 }
 
+const suggestions = computed<ActionChip[]>(() => {
+  const requirement = currentRequirement.value;
+  if (!requirement) {
+    return [
+      {
+        icon: "📋",
+        label: "项目概览",
+        prompt: "概览当前项目的需求版本与测试覆盖情况",
+        role: "team",
+      },
+    ];
+  }
+  if (!requirement.analysis) {
+    return [
+      {
+        icon: "🧠",
+        label: "分析需求并提炼测试点",
+        prompt: "深入分析当前需求文档，自动拆解测试点与待确认问题",
+        role: "analyst",
+      },
+      {
+        icon: "🛣️",
+        label: "梳理业务主路径",
+        prompt: "梳理当前需求的主干业务路径与状态流转拓扑",
+        role: "analyst",
+      },
+    ];
+  }
+
+  const confirmed = requirement.analysis.sections
+    .flatMap((section) => section.points)
+    .filter(isHumanConfirmed);
+  return confirmed.length
+    ? [
+        {
+          icon: "⚡",
+          label: "按已确认测试点生成用例",
+          prompt: "按已确认测试点生成测试用例",
+          role: "qa_expert",
+        },
+        {
+          icon: "📊",
+          label: "检查用例覆盖与质量",
+          prompt: "检查已有测试用例对条款的覆盖情况，识别盲区",
+          role: "reviewer",
+        },
+      ]
+    : [
+        {
+          icon: "📋",
+          label: "核对待确认测试点",
+          prompt: "解释需求中的待澄清问题，协助我人工核对测试点",
+          role: "analyst",
+        },
+        {
+          icon: "🛡️",
+          label: "排查需求风险",
+          prompt: "走查需求中的规则矛盾、时序与并发隐患等深层风险",
+          role: "analyst",
+        },
+      ];
+});
+
 const contextualChips = computed<ActionChip[]>(() => {
   const focus = canvasFocus.value;
-  const req = currentRequirement.value;
-
   if (focus) {
     if (focus.type === "chunk") {
       return [];
@@ -86,83 +147,12 @@ const contextualChips = computed<ActionChip[]>(() => {
       ];
     }
   }
-
-  if (!req) {
-    return [
-      {
-        icon: "📋",
-        label: "项目概览",
-        prompt: "概览当前项目的需求版本与测试覆盖情况",
-        role: "team",
-      },
-    ];
-  }
-
-  const chips: ActionChip[] = [];
-  if (!req.analysis) {
-    chips.push({
-      icon: "🧠",
-      label: "分析需求",
-      prompt: "深入分析当前需求文档，自动拆解测试点与待确认问题",
-      role: "analyst",
-    });
-    chips.push({
-      icon: "🛣️",
-      label: "梳理业务主路径",
-      prompt: "梳理当前需求的主干业务路径与状态流转拓扑",
-      role: "analyst",
-    });
-  } else {
-    const confirmed = req.analysis.sections
-      .flatMap((s) => s.points)
-      .filter(isHumanConfirmed);
-    if (confirmed.length > 0) {
-      chips.push({
-        icon: "⚡",
-        label: "批量生成用例",
-        prompt: "按已确认测试点生成测试用例",
-        role: "qa_expert",
-      });
-      chips.push({
-        icon: "📊",
-        label: "覆盖度与盲区排查",
-        prompt: "检查已有测试用例对条款的覆盖情况，识别盲区",
-        role: "reviewer",
-      });
-    } else {
-      chips.push({
-        icon: "📋",
-        label: "核对待确认点",
-        prompt: "解释需求中的待澄清问题，协助我人工核对测试点",
-        role: "analyst",
-      });
-    }
-    chips.push({
-      icon: "🛡️",
-      label: "需求风险走查",
-      prompt: "走查需求中的规则矛盾、时序与并发隐患等深层风险",
-      role: "analyst",
-    });
-    chips.push({
-      icon: "🛣️",
-      label: "梳理业务路径",
-      prompt: "梳理当前需求的主干业务路径与状态流转",
-      role: "analyst",
-    });
-  }
-
-  return chips;
+  return suggestions.value;
 });
 
-function applyChip(chip: ActionChip) {
-  draft.value = chip.prompt;
+function executeSuggestedTask(chip: ActionChip) {
   if (chip.role) role.value = chip.role;
-  nextTick(() => {
-    if (textareaRef.value) {
-      textareaRef.value.focus();
-      autoResizeTextarea();
-    }
-  });
+  void send(chip.prompt);
 }
 
 function focusTypeLabel(type: string): string {
@@ -172,21 +162,6 @@ function focusTypeLabel(type: string): string {
   return "对象";
 }
 
-const suggestions = computed(() => {
-  const requirement = currentRequirement.value;
-  if (!requirement) return ["概览当前项目的需求版本"];
-  if (!requirement.analysis)
-    return [
-      "分析当前需求，拆出测试点和待澄清问题",
-      "梳理当前需求的主干业务路径",
-    ];
-  const confirmed = requirement.analysis.sections
-    .flatMap((section) => section.points)
-    .filter(isHumanConfirmed);
-  return confirmed.length
-    ? ["按已确认测试点生成用例", "检查已有用例的覆盖与质量"]
-    : ["解释待澄清问题，帮我核对测试点", "检查需求中的边界与权限风险"];
-});
 function persist(projectId = currentProjectId.value, value = history.value) {
   if (!projectId) return;
   try {
@@ -386,20 +361,17 @@ onBeforeUnmount(() => {
     <div ref="conversation" class="conversation" aria-live="polite">
       <div v-if="!session.turns.length" class="welcome">
         <div class="welcome-icon">✨</div>
-        <h2>把测试设计交给 Agent 推进</h2>
-        <p>
-          描述你的测试意图。Agent
-          将自动分析业务路径、扫描规则缺陷、提炼测试点并生成带依据的测试用例。
-        </p>
+        <h2>现在可以继续这项工作</h2>
+        <p>点选推荐任务即可执行。需要调整范围或说明细节时，再在下方输入。</p>
         <div class="welcome-chips">
           <button
             v-for="item in suggestions"
-            :key="item"
+            :key="item.label"
             class="welcome-chip"
             :disabled="!currentProjectId"
-            @click="send(item)"
+            @click="executeSuggestedTask(item)"
           >
-            <span>{{ item }}</span>
+            <span>{{ item.icon }} {{ item.label }}</span>
             <span class="chip-arrow">↗</span>
           </button>
         </div>
@@ -486,13 +458,14 @@ onBeforeUnmount(() => {
     <footer class="composer">
       <!-- 动态上下文快捷指令胶囊 -->
       <div v-if="contextualChips.length" class="chips-container">
+        <span class="chips-hint">针对当前选择 · 点击直接执行</span>
         <div class="chips-list">
           <button
             v-for="(chip, idx) in contextualChips"
             :key="idx"
             class="chip-capsule"
             :disabled="pending || !currentProjectId"
-            @click="applyChip(chip)"
+            @click="executeSuggestedTask(chip)"
           >
             <span class="chip-icon">{{ chip.icon }}</span>
             <span class="chip-label">{{ chip.label }}</span>
@@ -965,6 +938,12 @@ h1 {
   margin-bottom: 8px;
   overflow-x: auto;
   scrollbar-width: none;
+}
+.chips-hint {
+  display: block;
+  margin: 0 0 4px 2px;
+  color: #94a3b8;
+  font-size: 10px;
 }
 .chips-container::-webkit-scrollbar {
   display: none;

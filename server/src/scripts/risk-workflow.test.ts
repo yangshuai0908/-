@@ -130,7 +130,7 @@ test('风险建议经核对进入澄清或候选测试点，保持持久化与�
     })
     await t.test('重新分析替换测试点后，原扫描建议可重新处理而不会指向失效测试点', async () => {
       modelResult = { sections: requirement.chunks.map(c => ({ reqId: c.reqId, points: [], questions: [], notTestableReason: '固定样本：需人工补充测试点' })) }
-      await analyzeRequirement(requirement.id, latest().analysis!.id)
+      await analyzeRequirement(requirement.id, latest().analysis!.id, undefined, undefined, true)
       const updated = resolveRisk(requirement.id, scan.id, scan.issues[1].id, pointInput)
       assert.equal(updated.analysis!.sections[1].points.length, 1)
       assert.equal(updated.analysis!.sections[1].points[0].status, 'pending')

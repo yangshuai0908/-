@@ -53,6 +53,10 @@ export const config = {
     ? 'enabled'
     : 'disabled') as 'enabled' | 'disabled',
   maxLlmCalls: num(process.env.MAX_LLM_CALLS, 24),
+  /** 相同模型+相同输入直接复用上次合格输出，不再发起网络请求 */
+  llmCache: (process.env.LLM_CACHE ?? 'on').toLowerCase() !== 'off',
+  /** 上传新版本时继承上一版本未变条款的分析结果（含人工确认） */
+  inheritAnalysis: (process.env.ANALYSIS_INHERIT ?? 'on').toLowerCase() !== 'off',
 } as const
 
 /** 模型配置是否完整 */
