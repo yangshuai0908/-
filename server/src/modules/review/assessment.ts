@@ -7,6 +7,7 @@ import {
   type TestCase,
   type Verdict,
 } from '../../store/schema.js'
+import { COST_POINTS } from '@testpilot/shared'
 import { isNonTestableChunk } from './coverage.js'
 
 export const VERDICTS: Verdict[] = ['unreviewed', 'effective', 'needs_revision', 'invalid']
@@ -25,12 +26,6 @@ export const COST_LABEL: Record<RevisionCost, string> = {
   medium: '中',
   high: '高',
 }
-
-/**
- * 相对工作量刻度，不是工时估算。
- * 只把「需修改」用例折算成点数，方便业务方一眼看出返工规模。
- */
-export const COST_POINTS: Record<RevisionCost, number> = { none: 0, low: 1, medium: 3, high: 6 }
 
 /** 旧数据 / 生成时未带 assessment 的用例，读取时统一补齐 */
 export function assessmentOf(c: TestCase): Assessment {

@@ -1,17 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { NButton, NInput, NModal, NSelect, NSpin, NTabPane, NTabs, useDialog, useMessage } from 'naive-ui'
 import { api } from '../api/client'
 import { activeTab, canvasFocus, currentProjectId, currentRequirement, currentRequirementId, projects, requirements, requirementsRevision, selectedAgentResult } from '../stores/workspace'
 import type { HealthInfo } from '../types'
-import AgentView from '../views/AgentView.vue'
-import RequirementView from '../views/RequirementView.vue'
-import RequirementAnalysisPanel from './RequirementAnalysisPanel.vue'
-import CasesView from '../views/CasesView.vue'
-import CompareView from '../views/CompareView.vue'
-import ReviewView from '../views/ReviewView.vue'
-import AgentResult from './AgentResult.vue'
 import AppWorkflowStepper from './AppWorkflowStepper.vue'
+
+const AgentView = defineAsyncComponent(() => import('../views/AgentView.vue'))
+const RequirementView = defineAsyncComponent(() => import('../views/RequirementView.vue'))
+const CasesView = defineAsyncComponent(() => import('../views/CasesView.vue'))
+const CompareView = defineAsyncComponent(() => import('../views/CompareView.vue'))
+const ReviewView = defineAsyncComponent(() => import('../views/ReviewView.vue'))
+const RequirementAnalysisPanel = defineAsyncComponent(() => import('./RequirementAnalysisPanel.vue'))
+const AgentResult = defineAsyncComponent(() => import('./AgentResult.vue'))
 
 const message = useMessage(), dialog = useDialog()
 const loading = ref(true), creating = ref(false), showCreate = ref(false), projectName = ref('')

@@ -1,5 +1,6 @@
 import { config } from '../../config.js'
 import { chatJson } from '../../llm/json.js'
+import { isInsufficientBalanceError } from '../../llm/client.js'
 import { buildScenarioMessages } from '../../prompts/scenario.js'
 import { prescreenDuplicates, mergeTwoCases } from '../review/index.js'
 import * as repo from '../../store/fsRepo.js'
@@ -90,6 +91,7 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
       const mutex = new SimpleMutex()
       let completedBatches = 0
       const totalBatches = plan.batches.length
+      let stopScheduling = false
 
       emit({
         type: 'progress',
@@ -181,6 +183,7 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error)
           errors.push(`第 ${index + 1} 批：${reason}`)
+          if (isInsufficientBalanceError(error)) stopScheduling = true
           emit({ type: 'error', message: errors.at(-1), runId: run.id })
         } finally {
           completedBatches++
@@ -195,15 +198,33 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
 
       // 按受控并发执行各批次
       const pool = new Set<Promise<void>>()
-      for (const [index, batch] of plan.batches.entries()) {
-        const p: Promise<void> = processBatch(index, batch).finally(() => pool.delete(p))
-        pool.add(p)
-        if (pool.size >= CONCURRENCY) {
-          await Promise.race(pool)
+      let nextBatch = 0
+      while (nextBatch < plan.batches.length || pool.size) {
+        while (!stopScheduling && nextBatch < plan.batches.length && pool.size < CONCURRENCY) {
+          const index = nextBatch++
+          const p: Promise<void> = processBatch(index, plan.batches[index]).finally(() => pool.delete(p))
+          pool.add(p)
         }
+        if (pool.size) await Promise.race(pool)
+        else break
       }
-      await Promise.all(pool)
-
+      if (stopScheduling && nextBatch < totalBatches) {
+        const reason = '模型余额不足，未请求此批次；补充余额后可重新生成'
+        for (const batch of plan.batches.slice(nextBatch)) {
+          for (const scenario of batch) {
+            const point = pointById.get(scenario.pointId)!
+            const siblings = plan.scenariosByPoint.get(point.id)!
+            skipped.push({
+              title: siblings.length > 1 ? `${point.title}（${scenario.label}）` : point.title,
+              pointId: point.id,
+              reason,
+            })
+          }
+        }
+        const message = `模型余额不足，已停止后续 ${totalBatches - nextBatch} 批；成功批次结果已保留`
+        errors.push(message)
+        emit({ type: 'error', message, runId: run.id })
+      }
       if (overwrite && errors.length) throw new AppError('重新生成存在失败批次，原有用例已保留；请查看追溯记录后重试')
       if (errors.length && !created.length) throw new AppError('本次没有成功生成用例，请查看失败步骤后重试')
       await traceStep('检查输入未变化并保存用例', { candidates: created, overwrite }, () => {

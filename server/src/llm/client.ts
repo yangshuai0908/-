@@ -18,10 +18,16 @@ export interface ChatOptions {
 /** 上游返回的错误，带一个「是否值得重试」的标记 */
 class UpstreamError extends AppError {
   retryable: boolean
-  constructor(message: string, status: number, retryable: boolean) {
+  upstreamStatus: number
+  constructor(message: string, status: number, retryable: boolean, upstreamStatus: number) {
     super(message, status)
     this.retryable = retryable
+    this.upstreamStatus = upstreamStatus
   }
+}
+
+export function isInsufficientBalanceError(error: unknown): boolean {
+  return error instanceof UpstreamError && (error.upstreamStatus === 402 || /insufficient balance/i.test(error.message))
 }
 
 interface CompletionResult {
@@ -83,6 +89,7 @@ async function requestOnce(opts: ChatOptions): Promise<CompletionResult> {
         `模型接口返回 ${res.status}：${body.slice(0, 300)}`,
         retryable ? 502 : 400,
         retryable,
+        res.status,
       )
     }
 
