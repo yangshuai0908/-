@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { summarizeAssessments, assessmentOf } from '../review/assessment.js'
-import * as repo from '../store/fsRepo.js'
+import { summarizeAssessments, assessmentOf } from './assessment.js'
+import * as repo from '../../store/fsRepo.js'
 import {
   GapStatusSchema,
   RevisionCostSchema,
@@ -10,9 +10,9 @@ import {
   type GapReview,
   type RequirementVersion,
   type TestCase,
-} from '../store/schema.js'
-import { AppError, genId, nowIso } from '../utils.js'
-import { recordChange } from '../trace.js'
+} from '../../store/schema.js'
+import { AppError, genId, nowIso } from '../../utils.js'
+import { recordChange } from '../../trace.js'
 
 export const assessmentRouter = Router()
 

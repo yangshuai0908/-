@@ -1,8 +1,8 @@
 import { Router } from 'express'
-import { diffChunks, findImpactedCases, assertComparable } from '../docs/diff.js'
-import { chatJson } from '../llm/json.js'
-import { buildCompareMessages } from '../prompts/compare.js'
-import * as repo from '../store/fsRepo.js'
+import { diffChunks, findImpactedCases, assertComparable } from '../../docs/diff.js'
+import { chatJson } from '../../llm/json.js'
+import { buildCompareMessages } from '../../prompts/compare.js'
+import * as repo from '../../store/fsRepo.js'
 import {
   LlmCompareResultSchema,
   blankAssessment,
@@ -11,10 +11,10 @@ import {
   type LlmCompareResult,
   type RequirementVersion,
   type TestCase,
-} from '../store/schema.js'
-import { AppError, genId, nowIso } from '../utils.js'
-import { buildCase } from './generate.js'
-import { assessCases } from '../validate/caseSupport.js'
+} from '../../store/schema.js'
+import { AppError, genId, nowIso } from '../../utils.js'
+import { buildCase } from '../cases/buildCase.js'
+import { assessCases } from '../../validate/caseSupport.js'
 
 export const compareRouter = Router()
 

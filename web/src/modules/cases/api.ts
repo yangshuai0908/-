@@ -24,6 +24,17 @@ export function createCasesApi(request: <T>(url: string, init?: RequestInit) => 
       request<{ caseIds: string[]; title: string; reason: string; score: number }[]>(
         `/api/requirements/${requirementId}/duplicates`,
       ),
+    mergeDuplicates: (requirementId: string, caseIds?: string[]) =>
+      request<{
+        ok: boolean
+        mergedCount: number
+        removedCount: number
+        mergedCases: TestCase[]
+        removedIds: string[]
+      }>(`/api/requirements/${requirementId}/duplicates/merge`, {
+        method: 'POST',
+        body: JSON.stringify({ caseIds }),
+      }),
   }
 }
 

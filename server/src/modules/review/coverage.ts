@@ -1,4 +1,4 @@
-import type { Chunk, TestCase } from '../store/schema.js'
+import type { Chunk, TestCase } from '../../store/schema.js'
 
 export interface CoverageRow {
   reqId: string

@@ -1,4 +1,4 @@
-import { createReviewReport } from '../../../routes/review.js'
+import { createReviewReport } from '../../review/index.js'
 import * as repo from '../../../store/fsRepo.js'
 import type { TestCase } from '../../../store/schema.js'
 import type { ToolArgs, ToolContext, ToolResult } from '../types.js'
@@ -13,6 +13,8 @@ export const reviewTool = {
     const report = await createReviewReport(requirement.id)
 
     return {
+      changes: ['review'],
+      artifact: { view: 'review', requirementId: requirement.id, reportId: report.id },
       title: `评审完成：总分 ${report.scores.total}/5，覆盖率 ${(report.coverageRate * 100).toFixed(1)}%`,
       data: {
         caseCount: cases.length,

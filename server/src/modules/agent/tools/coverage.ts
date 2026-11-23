@@ -1,4 +1,4 @@
-import { buildCoverage } from '../../../review/coverage.js'
+import { buildCoverage } from '../../review/index.js'
 import * as repo from '../../../store/fsRepo.js'
 import type { TestCase } from '../../../store/schema.js'
 import type { ToolArgs, ToolContext, ToolResult } from '../types.js'
@@ -14,6 +14,7 @@ export const coverageTool = {
     const uncovered = coverage.rows.filter((r) => r.testable && !r.caseIds.length)
 
     return {
+      artifact: { view: 'insights', requirementId: requirement.id },
       title: `覆盖率 ${(coverage.rate * 100).toFixed(1)}%`,
       data: {
         rate: coverage.rate,

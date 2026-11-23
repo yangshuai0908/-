@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { NButton, NSpin, NTag, useMessage } from "naive-ui";
 import { api } from "../api/client";
-import { currentProjectId, requirements } from "../stores/workspace";
+import { currentProjectId, requirements, sendToAgent, comparesRevision, selectedCompareId } from "../stores/workspace";
 import type { CompareReport } from "../types";
 
 const message = useMessage();
@@ -47,11 +47,19 @@ async function loadHistory() {
     return;
   }
   try {
-    history.value = await api.listCompares(currentProjectId.value);
+    const projectId = currentProjectId.value;
+    const list = await api.listCompares(projectId);
+    if (currentProjectId.value !== projectId) return;
+    history.value = list;
+    const selected = list.find(item => item.id === selectedCompareId.value);
+    if (selected) openHistory(selected);
   } catch {
     history.value = [];
   }
 }
+
+watch([comparesRevision, selectedCompareId], loadHistory);
+watch(currentProjectId, () => { report.value = null; void loadHistory(); });
 
 onMounted(async () => {
   syncDefault();
@@ -137,6 +145,23 @@ function hasPatch(
   );
 }
 
+function askAgentForStrategy() {
+  if (!report.value) return;
+  const fromName = labelOf.value(report.value.fromReqId);
+  const toName = labelOf.value(report.value.toReqId);
+  const changedPaths = visibleChanges.value
+    .slice(0, 8)
+    .map((c) => `- [${TYPE_LABEL[c.type]}] ${c.sectionPath}`)
+    .join("\n");
+  const prompt = `我对需求版本进行了对比：从【${fromName}】升级到【${toName}】。\n统计数据：\n- 修改条款：${stats.value.modified} 处\n- 新增条款：${stats.value.added} 处\n- 删除条款：${stats.value.removed} 处\n- 波及已有用例：${report.value.impactedCaseIds.length} 条\n\n核心变化条款示例：\n${changedPaths || "无显著变更"}\n\n系统建议：建议新增用例 ${report.value.results.newCases.length} 条，建议调整用例 ${report.value.results.adjustedCases.length} 条，建议废弃用例 ${report.value.results.deprecatedCases.length} 条。\n\n请由需求分析师评估版本影响，不新增或修改用例：\n1. 评估本次版本迭代的核心业务影响与高危失效风险点；\n2. 制定精准的回归测试范围（哪些模块需全量回归，哪些只需冒烟验证）；\n3. 给出测试用例资产的迁移与调整执行步骤清单。`;
+  sendToAgent({
+    prompt,
+    autoSend: true,
+    role: "analyst",
+    source: "compare-strategy",
+  });
+}
+
 async function applyAdjustCase(index: number) {
   if (!report.value) return;
   applyingAdjust.value = index;
@@ -194,6 +219,20 @@ function openHistory(h: CompareReport) {
       <template v-else-if="report">
         <!-- 变更统计 -->
         <div class="panel">
+          <div class="compare-agent-banner">
+            <div class="banner-text">
+              <span class="banner-icon">✦</span>
+              <span>想要对本次版本升级制定全套测试回归方案？</span>
+            </div>
+            <button
+              type="button"
+              class="compare-agent-btn"
+              @click="askAgentForStrategy"
+            >
+              查看变更分析建议
+            </button>
+          </div>
+
           <div class="stats-row">
             <div class="stat">
               <span class="stat-num" :style="{ color: TYPE_COLOR.added }">{{
@@ -454,6 +493,49 @@ function openHistory(h: CompareReport) {
 
 .tiny-text {
   font-size: 12px;
+}
+
+.compare-agent-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #f0f7ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+.banner-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #1e3a8a;
+  font-weight: 500;
+}
+.banner-icon {
+  color: #2563eb;
+  font-size: 14px;
+}
+.compare-agent-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 5px;
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid #2563eb;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.compare-agent-btn:hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
 }
 
 .stats-row {

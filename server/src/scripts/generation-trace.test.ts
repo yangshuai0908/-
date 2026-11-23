@@ -12,10 +12,8 @@ import { generateConfirmedCases, generationPlan } from '../modules/cases/generat
 import type { RequirementVersion, TestCase, TestPoint } from '../store/schema.js'
 import { tracesOf, type WorkflowTrace } from '../trace.js'
 import { requirementsRouter } from '../modules/requirements/routes.js'
-import { casesRouter } from '../routes/cases.js'
-import { generateRouter } from '../routes/generate.js'
-import { assessmentRouter } from '../routes/assessment.js'
-import { exportRouter } from '../routes/export.js'
+import { casesRouter, generateRouter, exportRouter } from '../modules/cases/index.js'
+import { assessmentRouter } from '../modules/review/index.js'
 import { AppError } from '../utils.js'
 
 test('confirmed-point generation and persisted failure tracing', async t => {
@@ -30,6 +28,7 @@ test('confirmed-point generation and persisted failure tracing', async t => {
   const point = (id: string, status: TestPoint['status'], category: TestPoint['category'] = 'normal'): TestPoint => ({
     id, status, category, title: id + '查询规则', objective: '验证超过 20 条时拒绝查询',
     evidence: [{ reqId: 'REQ-001', quote, matched: true }], questions: [],
+    review: status === 'confirmed' ? { actor: 'human', reviewer: '隔离测试核对人', at: '2026-11-06T00:00:00Z', comment: '' } : undefined,
   })
   const requirement: RequirementVersion = {
     id: 'req-fixture', projectId: 'project-fixture', label: 'v1', rawText: quote, sourceType: 'paste', apiList: [],
@@ -38,7 +37,7 @@ test('confirmed-point generation and persisted failure tracing', async t => {
   }
   const old = buildCase({ title: '已有用例应保留', steps: ['已有步骤'], expected: ['已有结果'] }, { projectId: requirement.projectId, requirementId: requirement.id, category: 'normal', chunks: requirement.chunks })
   function reset() {
-    repo.resetAll()
+    repo.resetAll(directory)
     repo.insert('requirements', structuredClone(requirement))
     repo.insert('cases', structuredClone(old))
     calls = 0
@@ -80,6 +79,15 @@ test('confirmed-point generation and persisted failure tracing', async t => {
       current().analysis!.sections[0].points[0].evidence[0].quote = quote.replace('<=', '>=')
       await assert.rejects(generateConfirmedCases(current(), ['normal']), /引用不匹配原文/)
       assert.equal(calls, 0)
+    })
+    await t.test('legacy or agent confirmation cannot replace human scope approval', async () => {
+      reset()
+      current().analysis!.sections[0].points[0].review = undefined
+      assert.equal(generationPlan(current(), ['normal']).points.length, 0)
+      await assert.rejects(generateConfirmedCases(current(), ['normal']), /没有已确认测试点/)
+      assert.equal(calls, 0)
+      current().analysis!.sections[0].points[0].review = { actor: 'agent', reviewer: 'model', at: '2026-11-06T00:00:00Z', comment: '' }
+      assert.equal(generationPlan(current(), ['normal']).points.length, 0)
     })
     await t.test('only confirmed points enter prompts and saved cases keep source snapshots', async () => {
       reset()
@@ -123,6 +131,8 @@ test('confirmed-point generation and persisted failure tracing', async t => {
     await t.test('confirmation does not silently erase unresolved business questions', async () => {
       reset()
       current().analysis!.sections[0].points[0].questions = ['待业务确认具体提示内容']
+      await assert.rejects(generateConfirmedCases(current(), ['normal']), /未澄清问题/)
+      current().analysis!.sections[0].points[0].review!.comment = '业务已确认：提示内容需按对应接口规范检查'
       await generateConfirmedCases(current(), ['normal'])
       assert(repo.all<TestCase>('cases').find(c => c.source)!.assumptions.includes('待业务确认具体提示内容'))
     })

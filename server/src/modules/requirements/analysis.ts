@@ -13,9 +13,10 @@ import {
 } from '../../store/schema.js'
 import { AppError, genId, nowIso } from '../../utils.js'
 import { traceStep, traceWorkflow } from '../../trace.js'
+import { isEvidenceMatchingChunk } from '../../validate/evidence.js'
 
 const SourceSchema = AnalysisEvidenceSchema.omit({ matched: true })
-const LlmPointSchema = TestPointSchema.omit({ id: true, status: true }).extend({
+const LlmPointSchema = TestPointSchema.omit({ id: true, status: true, review: true }).extend({
   evidence: z.array(SourceSchema).min(1).max(8),
 })
 export const AnalysisResultSchema = z.object({
@@ -25,17 +26,23 @@ export const TestPointPatchSchema = LlmPointSchema.extend({
   analysisId: z.string().min(1),
   analysisUpdatedAt: z.string().min(1),
   status: TestPointSchema.shape.status,
+  reviewer: z.string().trim().max(100).optional(),
+  comment: z.string().trim().max(2000).optional(),
 })
 
 const analyzing = new Set<string>()
 const BATCH_SIZE = 3
 
+export function assertAnalysisIdle(requirementId: string): void {
+  if (analyzing.has(requirementId)) throw new AppError('该需求正在分析，请完成后再处理扫描建议', 409)
+}
+
 export function locateAnalysisEvidence(chunks: Chunk[], sources: z.infer<typeof SourceSchema>[]) {
   return sources.map(({ reqId, quote }) => ({
     reqId,
     quote,
-    // 保留比较符、小数点和否定词，原文定位不能使用有损归一化。
-    matched: chunks.some((chunk) => chunk.reqId === reqId && chunk.text.includes(quote)),
+    // 保留比较符、小数点和否定词，同时容错 Markdown 代码块标记与换行空白差异
+    matched: chunks.some((chunk) => chunk.reqId === reqId && isEvidenceMatchingChunk(chunk, quote)),
   }))
 }
 
@@ -86,6 +93,7 @@ export function buildAnalysisMessages(chunks: Chunk[]): ChatMessage[] {
 正确的字符串语法示例（不是需求内容）：${JSON.stringify({ text: '保留“中文引号”和"英文引号"' })}。
 逐条识别业务行为、输入约束、角色/数据范围、状态变化及接口约定，拆成独立的“要验证什么”。title 是测试点名称，objective 是验证目标，必须写清适用条件，不添加原文没有的规则、阈值、错误码或角色。
 category 只能为 normal/abnormal/boundary/permission，按主要测试目标分类；不必为每条需求凑齐四类。一个目标只列一次。边界只能从明确上下限推导，接口名不能被当作字段/响应的完整定义。
+methods 写出适用的测试设计方法（等价类、边界值、状态迁移、判定表、权限矩阵等），rationale 简述选择这些方法的依据；不适用的方法不要凑数。
 每个测试点的 evidence 至少一条，每条 reqId 必须来自本批条款，quote 必须是该条款正文的连续原文，保留数字、比较符号和否定词。来源有多个时分别引用，不能拼接句子或拿同名词作依据。
 只明确了一半的规则：objective 写成待澄清的验证目标，缺失的条件或结果写进 questions，不能给确定结论。引用来自原文不等于测试目标已被原文支持，需要人工核对。
 sections 必须恰好有 ${chunks.length} 项，reqId 只能是 ${chunks.map(chunk => chunk.reqId).join('、')}，每个输入编号恰好出现一次；不得添加其他章节的结果或占位说明。
@@ -104,7 +112,22 @@ sections 必须恰好有 ${chunks.length} 项，reqId 只能是 ${chunks.map(chu
   ]
 }
 
-export async function analyzeRequirement(requirementId: string, replaceAnalysisId?: string): Promise<RequirementAnalysis> {
+export interface AnalysisProgressEvent {
+  type: 'start' | 'batch_start' | 'batch_done' | 'done' | 'error'
+  batch?: number
+  totalBatches?: number
+  currentChunks?: { reqId: string; sectionPath: string }[]
+  pointsCount?: number
+  totalPoints?: number
+  message?: string
+}
+
+export async function analyzeRequirement(
+  requirementId: string,
+  replaceAnalysisId?: string,
+  context?: unknown,
+  onProgress?: (event: AnalysisProgressEvent) => void,
+): Promise<RequirementAnalysis> {
   if (analyzing.has(requirementId)) throw new AppError('该需求正在分析，请稍后再试', 409)
   const requirement = repo.findById<RequirementVersion>('requirements', requirementId)
   if (!requirement) throw new AppError('需求版本不存在', 404)
@@ -121,14 +144,44 @@ export async function analyzeRequirement(requirementId: string, replaceAnalysisI
         const count = Math.ceil(requirement.chunks.length / BATCH_SIZE)
         if (count > config.maxLlmCalls) throw new AppError(`本次分析需要 ${count} 批，请拆分需求文档后重试`)
       })
+      const totalBatches = Math.ceil(requirement.chunks.length / BATCH_SIZE)
+      onProgress?.({
+        type: 'start',
+        totalBatches,
+        totalPoints: 0,
+        message: `开始需求分析，共 ${requirement.chunks.length} 个条款，分为 ${totalBatches} 批深度分析`,
+      })
       const sections: RequirementAnalysis['sections'] = []
+      let totalExtractedPoints = 0
       for (let i = 0; i < requirement.chunks.length; i += BATCH_SIZE) {
+        const batchIndex = Math.floor(i / BATCH_SIZE) + 1
         const chunks = requirement.chunks.slice(i, i + BATCH_SIZE)
-        const result = await traceStep(`分析第 ${Math.floor(i / BATCH_SIZE) + 1} 批条款`, { chunks }, () => chatJson(batchSchema(chunks), buildAnalysisMessages(chunks), {
-          label: `需求分析-第${Math.floor(i / BATCH_SIZE) + 1}批`,
+        onProgress?.({
+          type: 'batch_start',
+          batch: batchIndex,
+          totalBatches,
+          currentChunks: chunks.map(c => ({ reqId: c.reqId, sectionPath: c.sectionPath })),
+          totalPoints: totalExtractedPoints,
+          message: `正在研读第 ${batchIndex}/${totalBatches} 批条款（${chunks.map(c => c.reqId).join('、')} · ${chunks.map(c => c.sectionPath).join(' / ')}）`,
+        })
+        const messages = buildAnalysisMessages(chunks)
+        if (context) messages.push({ role: 'user', content: `以下是候选规则和依赖背景，仅供核对，不能当作原文没有的事实：${JSON.stringify(context)}` })
+        const result = await traceStep(`分析第 ${batchIndex} 批条款`, { chunks }, () => chatJson(batchSchema(chunks), messages, {
+          label: `需求分析-第${batchIndex}批`,
           jsonMode: true,
         }))
-        sections.push(...buildAnalysisSections(result, chunks))
+        const batchSections = buildAnalysisSections(result, chunks)
+        const batchPointsCount = batchSections.flatMap(s => s.points).length
+        totalExtractedPoints += batchPointsCount
+        sections.push(...batchSections)
+        onProgress?.({
+          type: 'batch_done',
+          batch: batchIndex,
+          totalBatches,
+          pointsCount: batchPointsCount,
+          totalPoints: totalExtractedPoints,
+          message: `第 ${batchIndex}/${totalBatches} 批分析完成，提炼出 ${batchPointsCount} 个测试点（累计 ${totalExtractedPoints} 个）`,
+        })
       }
       const current = repo.findById<RequirementVersion>('requirements', requirementId)
       if (!current) throw new AppError('需求版本已删除，本次分析未保存', 404)
@@ -136,6 +189,12 @@ export async function analyzeRequirement(requirementId: string, replaceAnalysisI
       const timestamp = nowIso()
       const analysis: RequirementAnalysis = { id: genId('analysis'), createdAt: timestamp, updatedAt: timestamp, sections }
       await traceStep('保存需求分析', { analysis }, () => repo.update<RequirementVersion>('requirements', requirementId, { analysis }))
+      onProgress?.({
+        type: 'done',
+        totalBatches,
+        totalPoints: totalExtractedPoints,
+        message: `需求分析全部完成，共提炼 ${totalExtractedPoints} 个测试点`,
+      })
       return analysis
     })
   } finally {
@@ -157,7 +216,7 @@ function updateTestPointInternal(requirementId: string, pointId: string, input: 
   const requirement = repo.findById<RequirementVersion>('requirements', requirementId)
   if (!requirement) throw new AppError('需求版本不存在', 404)
   const analysis = requirement.analysis
-  const { analysisId, analysisUpdatedAt, ...patch } = parsed.data
+  const { analysisId, analysisUpdatedAt, reviewer, comment, ...patch } = parsed.data
   if (!analysis || analysis.id !== analysisId || analysis.updatedAt !== analysisUpdatedAt) {
     throw new AppError('需求分析已更新，请刷新后再编辑', 409)
   }
@@ -168,14 +227,64 @@ function updateTestPointInternal(requirementId: string, pointId: string, input: 
   if (patch.status === 'confirmed' && evidence.some((item) => !item.matched)) {
     throw new AppError('引用未匹配原文，不能确认测试点；请修正引用或保存为待确认')
   }
+  if (patch.status === 'confirmed' && !reviewer) throw new AppError('确认测试点时请填写核对人')
+  if (patch.status === 'confirmed' && patch.questions.length && !comment) throw new AppError('存在待确认问题，请填写人工澄清结论，或保留为待确认')
   const updated: RequirementAnalysis = {
     ...analysis,
     updatedAt: new Date(Math.max(Date.now(), Date.parse(analysis.updatedAt) + 1)).toISOString(),
     sections: analysis.sections.map((section) => ({
       ...section,
-      points: section.points.map((point) => point.id === pointId ? { ...point, ...patch, evidence } : point),
+      points: section.points.map((point) => point.id === pointId ? {
+        ...point, ...patch, evidence,
+        review: { actor: 'human' as const, reviewer: reviewer || '未署名编辑', at: nowIso(), comment: comment || '', clarification: patch.questions.length ? comment || '' : '' },
+      } : point),
     })),
   }
   repo.update<RequirementVersion>('requirements', requirementId, { analysis: updated })
   return updated
+}
+
+export async function batchConfirmPoints(
+  requirementId: string,
+  reviewer: string,
+  options?: { onlyClear?: boolean; comment?: string },
+): Promise<{ analysis: RequirementAnalysis; confirmedCount: number }> {
+  if (analyzing.has(requirementId)) throw new AppError('该需求正在分析，暂时不能确认测试点', 409)
+  if (!reviewer.trim()) throw new AppError('请填写核对人姓名')
+  const requirement = repo.findById<RequirementVersion>('requirements', requirementId)
+  if (!requirement || !requirement.analysis) throw new AppError('需求或分析不存在', 404)
+  const analysis = requirement.analysis
+  let confirmedCount = 0
+  const now = nowIso()
+
+  const updatedSections = analysis.sections.map((section) => ({
+    ...section,
+    points: section.points.map((point) => {
+      const allMatched = point.evidence.length > 0 && point.evidence.every((e) => e.matched)
+      const hasQuestions = Boolean(point.questions && point.questions.length > 0)
+      if (point.status === 'pending' && allMatched && (!hasQuestions || (!options?.onlyClear && Boolean(options?.comment?.trim())))) {
+        confirmedCount++
+        return {
+          ...point,
+          status: 'confirmed' as const,
+          review: {
+            actor: 'human' as const,
+            reviewer: reviewer.trim(),
+            at: now,
+            comment: options?.comment?.trim() || '批量人工确认',
+            clarification: hasQuestions ? options!.comment!.trim() : '',
+          },
+        }
+      }
+      return point
+    }),
+  }))
+
+  const updated: RequirementAnalysis = {
+    ...analysis,
+    updatedAt: new Date(Math.max(Date.now(), Date.parse(analysis.updatedAt) + 1)).toISOString(),
+    sections: updatedSections,
+  }
+  repo.update<RequirementVersion>('requirements', requirementId, { analysis: updated })
+  return { analysis: updated, confirmedCount }
 }

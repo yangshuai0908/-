@@ -1,12 +1,10 @@
 import { Router } from 'express'
 import ExcelJS from 'exceljs'
 import { assessmentOf, COST_LABEL, VERDICT_LABEL } from '../review/assessment.js'
-import * as repo from '../store/fsRepo.js'
-import type { RequirementVersion, TestCase } from '../store/schema.js'
-import { AppError } from '../utils.js'
-import { overallState } from '../validate/evidence.js'
-
-export const exportRouter = Router()
+import * as repo from '../../store/fsRepo.js'
+import type { RequirementVersion, TestCase } from '../../store/schema.js'
+import { AppError } from '../../utils.js'
+import { overallState } from '../../validate/evidence.js'
 
 const CATEGORY_CN: Record<string, string> = {
   normal: '正常',
@@ -81,6 +79,8 @@ function escapeCsv(value: string): string {
   const s = value ?? ''
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
+
+export const exportRouter = Router()
 
 exportRouter.get('/requirements/:rid/export', async (req, res) => {
   const rid = String(req.params.rid)

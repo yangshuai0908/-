@@ -1,4 +1,4 @@
-import { createCompareReport } from '../../../routes/compare.js'
+import { createCompareReport } from '../../review/index.js'
 import type { ToolArgs, ToolContext, ToolResult } from '../types.js'
 import { scopedRequirement } from './context.js'
 
@@ -13,6 +13,8 @@ export const compareTool = {
     for (const change of report.changes) stats[change.type]++
 
     return {
+      changes: ['compare'],
+      artifact: { view: 'compare', requirementId: to.id, reportId: report.id },
       title: `完成版本对比：${stats.modified} 处修改、${stats.added} 处新增、${stats.removed} 处删除`,
       data: {
         reportId: report.id,

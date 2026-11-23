@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { analyzeRequirement, updateTestPoint } from './analysis.js'
+import { analyzeRequirement, updateTestPoint, batchConfirmPoints } from './analysis.js'
+import { resolveRisk } from './risks.js'
 import { tracesOf, type WorkflowTrace } from '../../trace.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -29,6 +30,7 @@ function requirementsOf(projectId: string): RequirementVersion[] {
 
 /** 删除需求时同步清理关联数据，避免留下孤儿记录 */
 function purgeRequirementData(requirementId: string): void {
+  repo.removeWhere<{ id: string; requirementId: string }>('designTasks', task => task.requirementId === requirementId)
   repo.removeWhere<WorkflowTrace>('traces', (run) => run.requirementId === requirementId)
   repo.removeWhere<TestCase>('cases', (c) => c.requirementId === requirementId)
   repo.removeWhere<ReviewReport>('reviews', (r) => r.requirementId === requirementId)
@@ -132,14 +134,55 @@ requirementsRouter.get('/requirements/:id/analysis', (req, res) => {
   res.json(requirement.analysis ?? null)
 })
 
+requirementsRouter.post('/requirements/:id/risk-scans/:scanId/issues/:issueId/resolve', (req, res) => {
+  res.json(resolveRisk(String(req.params.id), String(req.params.scanId), String(req.params.issueId), req.body))
+})
+
 requirementsRouter.post('/requirements/:id/analysis', async (req, res) => {
   const parsed = z.object({ replaceAnalysisId: z.string().min(1).optional() }).safeParse(req.body ?? {})
   if (!parsed.success) throw new AppError('需求分析参数不正确')
   res.json(await analyzeRequirement(String(req.params.id), parsed.data.replaceAnalysisId))
 })
 
+requirementsRouter.post('/requirements/:id/analysis/stream', async (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
+  const send = (event: unknown) => {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write('data: ' + JSON.stringify(event) + '\n\n')
+    }
+  }
+  try {
+    const parsed = z.object({ replaceAnalysisId: z.string().min(1).optional() }).safeParse(req.body ?? {})
+    if (!parsed.success) throw new AppError('需求分析参数不正确')
+    const analysis = await analyzeRequirement(
+      String(req.params.id),
+      parsed.data.replaceAnalysisId,
+      undefined,
+      (evt) => send(evt),
+    )
+    send({ type: 'finish', analysis })
+  } catch (error) {
+    send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
+  } finally {
+    res.end()
+  }
+})
+
 requirementsRouter.patch('/requirements/:id/analysis/points/:pointId', async (req, res) => {
   res.json(await updateTestPoint(String(req.params.id), String(req.params.pointId), req.body))
+})
+
+requirementsRouter.post('/requirements/:id/analysis/batch-confirm', async (req, res) => {
+  const reviewer = String(req.body?.reviewer ?? '').trim()
+  const onlyClear = Boolean(req.body?.onlyClear)
+  const comment = typeof req.body?.comment === 'string' ? req.body.comment : undefined
+  const result = await batchConfirmPoints(String(req.params.id), reviewer, { onlyClear, comment })
+  res.json(result)
 })
 
 requirementsRouter.delete('/requirements/:id', (req, res) => {

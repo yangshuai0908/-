@@ -193,13 +193,15 @@ if (process.argv.includes('--preview')) {
       assert.equal(saved[0].analysis.id, analysis.id)
       const point = analysis.sections[0].points[0]
       pointId = point.id
-      patch = { analysisId: analysis.id, analysisUpdatedAt: analysis.updatedAt, title: point.title, category: point.category, objective: point.objective, evidence: point.evidence, questions: [], status: 'confirmed' }
+      patch = { analysisId: analysis.id, analysisUpdatedAt: analysis.updatedAt, title: point.title, category: point.category, objective: point.objective, evidence: point.evidence, questions: [], status: 'confirmed', reviewer: '隔离测试核对人' }
     })
     await t.test('允许编辑确认，未知引用或空目标不能被确认', async () => {
       const pointRoute = `${route}/points/${pointId}`
+      assert.equal((await request(pointRoute, 'PATCH', { ...patch, reviewer: '' })).status, 400)
       const response = await request(pointRoute, 'PATCH', { ...patch, title: '人工核对后的测试点' })
       assert.equal(response.status, 200)
       assert.equal(response.data.sections[0].points[0].status, 'confirmed')
+      assert.equal(response.data.sections[0].points[0].review.actor, 'human')
       assert.equal((await request(pointRoute, 'PATCH', patch)).status, 409)
       assert.equal((await request(route)).data.sections[0].points[0].title, '人工核对后的测试点')
       patch.analysisUpdatedAt = response.data.updatedAt

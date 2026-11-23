@@ -1,13 +1,19 @@
-import type { AnalysisEvidence, Chunk, Project, RequirementAnalysis, RequirementVersion, TestPoint, WorkflowTrace } from '../../types'
+import type { AnalysisEvidence, Chunk, Project, RequirementAnalysis, RequirementVersion, RiskResolutionInput, TestPoint, WorkflowTrace } from '../../types'
 
 export type TestPointUpdate = Pick<TestPoint, 'title' | 'category' | 'objective' | 'questions' | 'status'> & {
   analysisId: string
   analysisUpdatedAt: string
+  reviewer?: string
+  comment?: string
   evidence: Pick<AnalysisEvidence, 'reqId' | 'quote'>[]
 }
 
 export function createRequirementsApi(request: <T>(url: string, init?: RequestInit) => Promise<T>) {
   return {
+    resolveRisk: (id: string, scanId: string, issueId: string, payload: RiskResolutionInput) =>
+      request<RequirementVersion>(`/api/requirements/${id}/risk-scans/${scanId}/issues/${issueId}/resolve`, {
+        method: 'POST', body: JSON.stringify(payload),
+      }),
     listWorkflowTraces: (id: string, caseId = '') => request<WorkflowTrace[]>(`/api/requirements/${id}/traces${caseId ? `?caseId=${encodeURIComponent(caseId)}` : ''}`),
     getWorkflowTrace: (id: string, runId: string) => request<WorkflowTrace>(`/api/requirements/${id}/traces/${runId}`),
     listProjects: () => request<Project[]>('/api/projects'),
@@ -52,6 +58,17 @@ export function createRequirementsApi(request: <T>(url: string, init?: RequestIn
           evidence: payload.evidence.map(({ reqId, quote }) => ({ reqId, quote })),
         }),
       }),
+    batchConfirmRequirementPoints: (
+      id: string,
+      payload: { reviewer: string; onlyClear?: boolean; comment?: string },
+    ) =>
+      request<{ analysis: RequirementAnalysis; confirmedCount: number }>(
+        `/api/requirements/${id}/analysis/batch-confirm`,
+        {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        },
+      ),
     listDemo: () => request<{ name: string; label: string; text: string }[]>('/api/demo'),
   }
 }

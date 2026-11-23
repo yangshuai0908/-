@@ -240,3 +240,38 @@ export function overallState(evidence: Evidence[]): 'explicit' | 'inferred' | 'u
 export function clearEvidenceCache(): void {
   cache.clear()
 }
+
+/**
+ * 智能容错的原文引用比对：
+ * 1. 严格子串命中；
+ * 2. 忽略空白字符、CRLF 换行差异；
+ * 3. 忽略 Markdown 代码块标记（如 ```json 与 ```）；
+ * 4. 按行匹配：引用的非空核心行均在条款原文中。
+ * 
+ * 注意：必须严格保留比较符号（<=、>=）、数字与关键字符，不作有损字符归一化。
+ */
+export function isEvidenceMatchingChunk(chunk: Chunk | undefined, quote: string): boolean {
+  if (!chunk) return false
+  if (!quote || !quote.trim()) return true
+
+  const text = chunk.text
+  if (text.includes(quote)) return true
+
+  const strip = (s: string) =>
+    s
+      .replace(/\r\n/g, '\n')
+      .replace(/```[a-zA-Z]*\n?/g, '')
+      .replace(/```/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+  if (strip(text).includes(strip(quote))) return true
+
+  const lines = quote
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 2)
+  if (lines.length > 0 && lines.every((l) => text.includes(l))) return true
+
+  return false
+}

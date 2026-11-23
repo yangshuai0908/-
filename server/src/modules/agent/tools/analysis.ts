@@ -11,6 +11,8 @@ export const analysisTool = {
     const analysis = await analyzeRequirement(requirement.id)
     const points = analysis.sections.flatMap((section) => section.points)
     return {
+      changes: reused ? [] : ['requirements'],
+      artifact: { view: 'points', requirementId: requirement.id },
       title: `${reused ? '已读取' : '已完成'}需求分析，共 ${points.length} 个候选测试点`,
       data: {
         reused,

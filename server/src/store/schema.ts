@@ -25,6 +25,15 @@ export const TestPointSchema = z.object({
   evidence: z.array(AnalysisEvidenceSchema).min(1).max(8),
   questions: z.array(z.string().trim().min(1).max(500)).max(20),
   status: z.enum(['pending', 'confirmed', 'excluded']),
+  methods: z.array(z.string().trim().min(1).max(100)).max(8).optional(),
+  rationale: z.string().trim().max(1000).optional(),
+  review: z.object({
+    actor: z.enum(['human', 'agent']),
+    reviewer: z.string(),
+    at: z.string(),
+    comment: z.string(),
+    clarification: z.string().optional(),
+  }).optional(),
 })
 export type TestPoint = z.infer<typeof TestPointSchema>
 
@@ -42,6 +51,30 @@ export const RequirementAnalysisSchema = z.object({
 })
 export type RequirementAnalysis = z.infer<typeof RequirementAnalysisSchema>
 
+export const RiskIssueSchema = z.object({
+  id: z.string(), reqId: z.string(),
+  type: z.enum(['conflict', 'undefined_edge', 'concurrency_race', 'security_leak', 'other']),
+  findingKind: z.enum(['needs_clarification', 'rule_conflict', 'test_suggestion', 'covered']),
+  severity: z.enum(['critical', 'high', 'medium', 'low']),
+  location: z.string(), description: z.string(), riskImpact: z.string(),
+  evidence: z.array(AnalysisEvidenceSchema), question: z.string(),
+  defensiveCase: z.object({
+    title: z.string(), category: TestPointSchema.shape.category,
+    priority: z.enum(['P0', 'P1', 'P2']), precondition: z.string(),
+    steps: z.array(z.string()), expected: z.array(z.string()),
+  }).optional(),
+  resolution: z.object({
+    action: z.enum(['question', 'point', 'covered', 'ignored']),
+    comment: z.string(), at: z.string(), pointId: z.string().optional(),
+  }).optional(),
+})
+export const RiskScanSchema = z.object({
+  id: z.string(), createdAt: z.string(), summary: z.string(), targetReqId: z.string().optional(),
+  includedReqIds: z.array(z.string()), totalChunks: z.number(), contextTruncated: z.boolean(),
+  issues: z.array(RiskIssueSchema),
+})
+export type RiskScan = z.infer<typeof RiskScanSchema>
+
 export const RequirementSchema = z.object({
   id: z.string(),
   projectId: z.string(),
@@ -52,6 +85,7 @@ export const RequirementSchema = z.object({
   apiList: z.array(z.string()).default([]),
   chunks: z.array(ChunkSchema),
   analysis: RequirementAnalysisSchema.optional(),
+  riskScans: z.array(RiskScanSchema).optional(),
   createdAt: z.string(),
 })
 export type RequirementVersion = z.infer<typeof RequirementSchema>
@@ -142,6 +176,7 @@ export const TestCaseSchema = z.object({
     analysisId: z.string(),
     analysisUpdatedAt: z.string(),
     pointId: z.string(),
+    mergedPointIds: z.array(z.string()).optional(),
     title: z.string(),
     objective: z.string(),
     reqIds: z.array(z.string()),

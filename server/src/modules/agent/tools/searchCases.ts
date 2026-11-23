@@ -22,6 +22,7 @@ export const searchCasesTool = {
       )
 
     return {
+      artifact: { view: 'cases', requirementId: requirement.id },
       title: `查到 ${items.length} 条匹配用例`,
       data: items.slice(0, 40).map(({ id, title, category, priority, evidence }) => ({
         id,

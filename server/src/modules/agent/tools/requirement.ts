@@ -7,6 +7,7 @@ export const requirementTool = {
   async execute(args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
     const requirement = scopedRequirement(ctx.projectId, args.requirementId ?? ctx.currentRequirementId)
     return {
+      artifact: { view: 'requirement', requirementId: requirement.id },
       title: `已读取需求 ${requirement.label}`,
       data: {
         label: requirement.label,

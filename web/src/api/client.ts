@@ -1,4 +1,4 @@
-import type { HealthInfo, TestCase } from '../types'
+import type { HealthInfo, RequirementAnalysis, TestCase } from '../types'
 import { createRequirementsApi } from '../modules/requirements/api'
 import { createCasesApi } from '../modules/cases/api'
 import { createReviewApi } from '../modules/review/api'
@@ -7,11 +7,12 @@ import {
   streamAgentChat,
   type AgentAction,
   type AgentMessage,
+  type AgentRole,
   type AgentStreamEvent,
 } from '../modules/agent/api'
 
 export { streamAgentChat }
-export type { AgentAction, AgentMessage, AgentStreamEvent }
+export type { AgentAction, AgentMessage, AgentRole, AgentStreamEvent }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
@@ -45,6 +46,8 @@ export const api = {
 
   // 智能助手模块
   ...agentApi,
+
+
 }
 
 export interface GenerateEvent {
@@ -57,6 +60,76 @@ export interface GenerateEvent {
   data?: TestCase
   items?: string[]
   summary?: { total: number; unverified: number; errors?: number }
+}
+
+export interface AnalysisStreamEvent {
+  type: 'start' | 'batch_start' | 'batch_done' | 'finish' | 'done' | 'error'
+  batch?: number
+  totalBatches?: number
+  currentChunks?: { reqId: string; sectionPath: string }[]
+  pointsCount?: number
+  totalPoints?: number
+  message?: string
+  analysis?: RequirementAnalysis
+}
+
+export async function streamAnalyzeRequirement(
+  requirementId: string,
+  payload: { replaceAnalysisId?: string } = {},
+  onEvent: (evt: AnalysisStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<RequirementAnalysis> {
+  const res = await fetch(`/api/requirements/${requirementId}/analysis/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    const body = (await res.json().catch(() => ({ error: res.statusText }))) as { error?: string }
+    throw new Error(body.error || `需求分析失败 (${res.status})`)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalAnalysis: RequirementAnalysis | null = null
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep = buffer.indexOf('\n\n')
+    while (sep !== -1) {
+      const raw = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      sep = buffer.indexOf('\n\n')
+      const dataLines = raw
+        .split('\n')
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).trim())
+      if (!dataLines.length) continue
+      try {
+        const evt = JSON.parse(dataLines.join('\n')) as AnalysisStreamEvent
+        if (evt.type === 'error') {
+          throw new Error(evt.message || '需求分析发生错误')
+        }
+        if (evt.analysis) {
+          finalAnalysis = evt.analysis
+        }
+        onEvent(evt)
+      } catch (err) {
+        if (err instanceof Error && !err.message.includes('Unexpected end of JSON input')) {
+          throw err
+        }
+      }
+    }
+  }
+
+  if (!finalAnalysis) {
+    throw new Error('未收到分析结果数据')
+  }
+  return finalAnalysis
 }
 
 /**

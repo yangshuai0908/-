@@ -1,6 +1,5 @@
 import type { ChatMessage } from '../llm/client.js'
-import type { CoverageRow } from '../review/coverage.js'
-import type { DupCandidate } from '../review/dedupe.js'
+import type { CoverageRow, DupCandidate } from '../modules/review/index.js'
 import type { TestCase } from '../store/schema.js'
 import { SYSTEM_PROMPT } from './system.js'
 

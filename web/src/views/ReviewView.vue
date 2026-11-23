@@ -1,40 +1,26 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { NButton, NInput, NSpin, useDialog, useMessage } from "naive-ui";
+import { NButton, NSpin, useMessage } from "naive-ui";
 import { api } from "../api/client";
 import {
   cases,
   casesRevision,
+  reviewsRevision,
+  selectedReviewId,
   currentRequirement,
   currentRequirementId,
+  sendToAgent,
 } from "../stores/workspace";
 import {
   CATEGORY_COLOR,
   CATEGORY_LABEL,
-  COST_COLOR,
-  COST_LABEL,
-  GAP_STATUS_LABEL,
-  VERDICT_COLOR,
-  VERDICT_LABEL,
-  blankAssessment,
-  type AssessmentSummary,
   type Category,
-  type GapReview,
-  type GapStatus,
   type ReviewReport,
-  type RevisionCost,
-  type Verdict,
 } from "../types";
-
-interface GapRow {
-  reqId: string;
-  sectionPath: string;
-  status: GapStatus;
-  comment: string;
-}
+import ReviewSummary from "./review/components/ReviewSummary.vue";
+import DuplicateGroup from "./review/components/DuplicateGroup.vue";
 
 const message = useMessage();
-const dialog = useDialog();
 
 const loading = ref(false);
 const report = ref<ReviewReport | null>(null);
@@ -45,161 +31,41 @@ const caseTitle = computed(() => {
 });
 
 async function loadCases() {
-  if (!currentRequirementId.value) return;
+  const rid = currentRequirementId.value;
+  if (!rid) return;
   try {
-    cases.value = await api.listCases(currentRequirementId.value);
+    const items = await api.listCases(rid);
+    if (currentRequirementId.value === rid) cases.value = items;
   } catch {
     /* 忽略：只影响标题展示 */
   }
 }
 
 async function loadExisting() {
-  if (!currentRequirementId.value) {
-    report.value = null;
-    return;
-  }
-  try {
-    report.value = await api.getReview(currentRequirementId.value);
-  } catch {
-    report.value = null;
-  }
-}
-
-// ── 人工评审：与系统自动评分相互独立，没跑过系统评审也能看 ──
-const summary = ref<AssessmentSummary | null>(null);
-const gapReviews = ref<GapReview[]>([]);
-// 必须是 ref 而非 computed：computed 返回缓存快照，行内编辑会被重算冲掉
-const gapRows = ref<GapRow[]>([]);
-const gapExpanded = ref(false);
-const assessing = ref(false);
-const reviewerName = ref(localStorage.getItem("tp.reviewer") ?? "");
-watch(reviewerName, (v) => localStorage.setItem("tp.reviewer", v.trim()));
-
-const gapStatusOptions = (
-  ["unconfirmed", "confirmed_ok", "missing"] as GapStatus[]
-).map((s) => ({
-  label: GAP_STATUS_LABEL[s],
-  value: s,
-}));
-
-async function loadSummary() {
-  if (!currentRequirementId.value) {
-    summary.value = null;
-    return;
-  }
-  summary.value = await api
-    .getAssessmentSummary(currentRequirementId.value)
-    .catch(() => null);
-}
-
-function rebuildGapRows() {
-  const byReq = new Map(gapReviews.value.map((g) => [g.reqId, g]));
-  gapRows.value = (summary.value?.testableChunks ?? []).map((ch) => {
-    const g = byReq.get(ch.reqId);
-    return {
-      reqId: ch.reqId,
-      sectionPath: ch.sectionPath,
-      status: g?.status ?? ("unconfirmed" as GapStatus),
-      comment: g?.comment ?? "",
-    };
-  });
-}
-
-async function loadAssessment() {
   const rid = currentRequirementId.value;
   if (!rid) {
-    summary.value = null;
-    gapReviews.value = [];
-    gapRows.value = [];
+    report.value = null;
     return;
   }
-  assessing.value = true;
-  const [s, g] = await Promise.all([
-    api.getAssessmentSummary(rid).catch(() => null),
-    api.listGapReviews(rid).catch(() => [] as GapReview[]),
-  ]);
-  summary.value = s;
-  gapReviews.value = g;
-  rebuildGapRows();
-  assessing.value = false;
-}
-
-async function saveGap(row: GapRow) {
-  if (!currentRequirementId.value) return;
   try {
-    const saved = await api.saveGapReview(currentRequirementId.value, {
-      reqId: row.reqId,
-      status: row.status,
-      reviewer: reviewerName.value.trim(),
-      comment: row.comment,
-    });
-    const idx = gapReviews.value.findIndex((g) => g.reqId === row.reqId);
-    if (idx >= 0) gapReviews.value[idx] = saved;
-    else gapReviews.value.push(saved);
-    // 只刷汇总，不重建 gapRows，避免把用户还在输入的备注冲掉
-    await loadSummary();
-    message.success(`${row.reqId} 已记录`);
+    const reportId = selectedReviewId.value;
+    const result = reportId ? await api.getReviewReport(rid, reportId) : await api.getReview(rid);
+    if (currentRequirementId.value === rid && selectedReviewId.value === reportId) report.value = result;
   } catch (e) {
-    message.error((e as Error).message);
+    if (currentRequirementId.value === rid) {
+      report.value = null;
+      message.error((e as Error).message);
+    }
   }
 }
 
-function resetAssessments() {
-  const rid = currentRequirementId.value;
-  if (!rid) return;
-  dialog.warning({
-    title: "清空人工评审",
-    content:
-      "会清空当前需求版本下所有用例的人工结论、评审人、批注与条款遗漏确认，用例本身不受影响。确认继续？",
-    positiveText: "清空",
-    negativeText: "取消",
-    onPositiveClick: async () => {
-      try {
-        await api.resetAssessments(rid);
-        cases.value = cases.value.map((c) => ({
-          ...c,
-          assessment: blankAssessment(),
-        }));
-        await loadAssessment();
-        message.success("人工评审已清空");
-      } catch (e) {
-        message.error((e as Error).message);
-      }
-    },
-  });
-}
-
-const verdictRows = computed(() =>
-  (["unreviewed", "effective", "needs_revision", "invalid"] as Verdict[]).map(
-    (v) => ({
-      key: v,
-      label: VERDICT_LABEL[v],
-      color: VERDICT_COLOR[v],
-      count: summary.value?.byVerdict[v] ?? 0,
-    }),
-  ),
-);
-
-const costRows = computed(() =>
-  (["none", "low", "medium", "high"] as RevisionCost[]).map((c) => ({
-    key: c,
-    label: COST_LABEL[c],
-    color: COST_COLOR[c],
-    count: summary.value?.byCost[c] ?? 0,
-  })),
-);
-
-const visibleGapRows = computed(() => (gapExpanded.value ? gapRows.value : []));
-
-const pct = (v: number): string => `${Math.round(v * 100)}%`;
-
-watch([currentRequirementId, casesRevision], async () => {
+watch([currentRequirementId, casesRevision, reviewsRevision, selectedReviewId], async () => {
   report.value = null;
-  await Promise.all([loadCases(), loadExisting(), loadAssessment()]);
+  await Promise.all([loadCases(), loadExisting()]);
 });
 
 onMounted(async () => {
-  await Promise.all([loadCases(), loadExisting(), loadAssessment()]);
+  await Promise.all([loadCases(), loadExisting()]);
 });
 
 async function runReview() {
@@ -212,6 +78,7 @@ async function runReview() {
     report.value = await api.review({
       requirementId: currentRequirementId.value,
     });
+    selectedReviewId.value = report.value.id;
     message.success(
       `评审完成：覆盖率 ${(report.value.coverageRate * 100).toFixed(0)}%，总分 ${report.value.scores.total}`,
     );
@@ -239,7 +106,6 @@ const scoreItems = computed(() => {
 });
 
 const coveredRows = computed(() => report.value?.coverage ?? []);
-// 背景说明、纯接口定义这类条款不计入分母，也不该算「未覆盖」
 const testableRows = computed(() =>
   coveredRows.value.filter((r) => r.testable !== false),
 );
@@ -278,6 +144,79 @@ const severityColor: Record<string, string> = {
   medium: "var(--tp-yellow)",
   low: "var(--tp-text-dim)",
 };
+
+function askAgentForRemediation() {
+  if (!report.value) return;
+  const gapList = report.value.gaps
+    .slice(0, 5)
+    .map(
+      (g) =>
+        `- [${severityLabel[g.severity] || "中"}] 条款 ${g.reqId}: ${g.sectionPath} (${g.reason})`,
+    )
+    .join("\n");
+  const dupList = report.value.duplicates
+    .slice(0, 3)
+    .map((d) => `- ${d.title}: ${d.reason}`)
+    .join("\n");
+  const prompt = `当前需求【${currentRequirement.value?.label}】质量评审报告如下：\n- 综合评分：${report.value.scores.total}/5 分\n- 条款覆盖率：${(report.value.coverageRate * 100).toFixed(1)}%\n- 覆盖缺口：${report.value.gaps.length} 处\n- 疑似重复用例：${report.value.duplicates.length} 组\n\n缺口示例：\n${gapList || "无"}\n\n疑似重复示例：\n${dupList || "无"}\n\n请由质量审查员给出审查建议，不新增或修改用例：\n1. 分析导致覆盖缺口的核心成因，并给出针对未覆盖条款的用例设计；\n2. 针对重复用例组提出合并去重建议；\n3. 列出需要需求分析师澄清、用例设计师修改和人工评审确认的事项，不保证评分或覆盖结果。`;
+  sendToAgent({
+    prompt,
+    autoSend: true,
+    role: "reviewer",
+    source: "review-remediation",
+  });
+}
+
+function askAgentForDuplicateFix(d: { title: string; reason: string; caseIds: string[] }) {
+  const casesList = d.caseIds
+    .map((id: string) => `- 【${caseTitle.value(id)}】`)
+    .join("\n");
+  const prompt = `在质量评审中检测到疑似重复用例组【${d.title}】：\n${casesList}\n检测理由：${d.reason}\n\n请深度分析：\n1. 这几条用例的测试目的与断言是否存在实质重叠？\n2. 建议保留哪一条，或者如何将这几条合并为一条更具代表性的等价类测试用例？`;
+  sendToAgent({
+    prompt,
+    autoSend: true,
+    role: "reviewer",
+    source: "duplicate-fix",
+  });
+}
+
+async function handleMergeDuplicateGroup(caseIds: string[]) {
+  if (!currentRequirementId.value) return;
+  try {
+    const res = await api.mergeDuplicates(currentRequirementId.value, caseIds);
+    message.success(`已合并该组用例，整合了依据与步骤（去重清理 ${res.removedCount} 条）`);
+    await loadExisting();
+    await loadCases();
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : '合并失败');
+  }
+}
+
+async function handleMergeAllDuplicates() {
+  if (!currentRequirementId.value) return;
+  try {
+    const res = await api.mergeDuplicates(currentRequirementId.value);
+    if (res.removedCount > 0) {
+      message.success(`已一键合并所有疑似重复用例（共合并 ${res.mergedCount} 条，去重清理 ${res.removedCount} 条）`);
+      await loadExisting();
+      await loadCases();
+    } else {
+      message.info('未发现需要自动合并的重复用例');
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : '一键合并失败');
+  }
+}
+
+function askAgentForGapFix(g: any) {
+  const prompt = `条款【${g.reqId} · ${g.sectionPath}】目前处于未覆盖状态（严重级别：${severityLabel[g.severity] || "中"}，原因：${g.reason}）。\n请由需求分析师结合完整需求核对缺失的测试点和待澄清规则，只给出候选测试点建议，不直接生成用例。`;
+  sendToAgent({
+    prompt,
+    autoSend: true,
+    role: "analyst",
+    source: "gap-fix",
+  });
+}
 </script>
 
 <template>
@@ -287,13 +226,22 @@ const severityColor: Record<string, string> = {
     <template v-else>
       <div class="panel review-bar">
         <span class="section-title" style="margin: 0">用例评审</span>
-        <span class="tiny-text text-dim"
-          >{{ currentRequirement?.label }} · {{ cases.length }} 条用例</span
-        >
+        <span class="tiny-text text-dim">
+          {{ currentRequirement?.label }} · {{ cases.length }} 条用例
+        </span>
         <span class="spacer" />
         <span v-if="report" class="tiny-text text-dim">
           评审于 {{ new Date(report.createdAt).toLocaleString("zh-CN") }}
         </span>
+        <button
+          v-if="report"
+          type="button"
+          class="review-agent-action-btn"
+          title="质量审查员：整理问题和修改建议，不改写用例"
+          @click="askAgentForRemediation"
+        >
+          查看审查建议
+        </button>
         <n-button
           size="small"
           type="primary"
@@ -306,207 +254,8 @@ const severityColor: Record<string, string> = {
 
       <n-spin v-if="loading" style="display: block; margin: 60px auto" />
 
-      <!-- 人工评审：独立于系统评分，没跑过系统评审也能看 -->
-      <div v-if="!loading && summary" class="panel">
-        <h3 class="section-title">
-          人工评审
-          <span class="text-dim" style="font-weight: 400">
-            （测试 / 业务人员判断，与下方系统评分相互独立）
-          </span>
-        </h3>
-        <div class="hr-head">
-          <div>
-            <span class="hr-big"
-              >{{ summary.reviewed }}/{{ summary.total }}</span
-            >
-            <span class="tiny-text text-dim">
-              条已人工评审 · 有效率 {{ pct(summary.effectiveRate) }} · 待评
-              {{ summary.pending }} 条
-            </span>
-          </div>
-          <div class="hr-head-right">
-            <n-input
-              v-model:value="reviewerName"
-              size="tiny"
-              placeholder="评审人姓名"
-              style="width: 128px"
-            />
-            <n-button
-              size="tiny"
-              quaternary
-              :loading="assessing"
-              @click="loadAssessment"
-              >刷新</n-button
-            >
-            <n-button
-              size="tiny"
-              quaternary
-              type="error"
-              @click="resetAssessments"
-              >清空评审</n-button
-            >
-          </div>
-        </div>
-
-        <div class="coverage-track">
-          <div
-            class="coverage-fill"
-            :style="{ width: pct(summary.reviewRate) }"
-          />
-        </div>
-
-        <div class="hr-grid">
-          <div
-            v-for="v in verdictRows"
-            :key="v.key"
-            class="hr-card"
-            :style="{ borderLeftColor: v.color }"
-          >
-            <div class="hr-num" :style="{ color: v.color }">{{ v.count }}</div>
-            <div class="hr-label">{{ v.label }}</div>
-          </div>
-        </div>
-
-        <div class="hr-cost">
-          <b>修改成本</b>
-          <span class="text-dim">
-            待修改 {{ summary.byVerdict.needs_revision }} 条 · 相对工作量
-            <b style="color: var(--tp-yellow)">{{
-              summary.revisionEffortPoints
-            }}</b>
-            点 · 高成本 {{ summary.highCostCount }} 条
-          </span>
-          <span class="tiny-text text-dim"
-            >刻度 低 1 / 中 3 / 高 6 点，非工时估算</span
-          >
-        </div>
-        <div class="cost-row">
-          <span v-for="c in costRows" :key="c.key" class="cost-chip">
-            <span class="cat-dot" :style="{ background: c.color }" />{{
-              c.label
-            }}
-            <b :style="{ color: c.color }">{{ c.count }}</b>
-          </span>
-        </div>
-
-        <div class="hr-cols">
-          <div class="hr-col">
-            <div class="hr-sub-title">评审人分布</div>
-            <div v-if="!summary.byReviewer.length" class="tiny-text text-dim">
-              还没有人提交评审
-            </div>
-            <span
-              v-for="r in summary.byReviewer"
-              :key="r.reviewer"
-              class="hr-chip"
-            >
-              {{ r.reviewer }} <b>{{ r.count }}</b>
-            </span>
-          </div>
-          <div class="hr-col">
-            <div class="hr-sub-title">
-              待处理用例（{{ summary.actionCases.length }}）
-            </div>
-            <div v-if="!summary.actionCases.length" class="tiny-text text-dim">
-              没有需修改或废弃的用例
-            </div>
-            <div
-              v-for="a in summary.actionCases.slice(0, 6)"
-              :key="a.id"
-              class="hr-line"
-            >
-              <span
-                class="hr-dot"
-                :style="{ background: VERDICT_COLOR[a.verdict] }"
-              />
-              <span class="hr-line-title">{{ a.title }}</span>
-              <span
-                class="tiny-text"
-                :style="{ color: VERDICT_COLOR[a.verdict] }"
-              >
-                {{ VERDICT_LABEL[a.verdict] }}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div class="gap-review">
-          <div class="gap-review-head">
-            <span>
-              <b>遗漏确认</b>
-              <span class="text-dim tiny-text" style="margin-left: 8px">
-                {{ summary.gap.confirmedOk }}/{{
-                  summary.gap.testable
-                }}
-                条已确认无遗漏， {{ summary.gap.missing }} 条判为存在遗漏
-              </span>
-            </span>
-            <n-button
-              size="tiny"
-              quaternary
-              @click="gapExpanded = !gapExpanded"
-            >
-              {{
-                gapExpanded
-                  ? "收起条款清单"
-                  : `展开条款清单（${gapRows.length} 条）`
-              }}
-            </n-button>
-          </div>
-          <div
-            v-if="!gapExpanded"
-            class="tiny-text text-dim"
-            style="padding: 8px 0"
-          >
-            点右侧展开，逐条确认哪些条款缺用例
-          </div>
-          <div
-            v-else-if="!visibleGapRows.length"
-            class="tiny-text text-dim"
-            style="padding: 8px 0"
-          >
-            该需求没有可测条款
-          </div>
-          <div
-            v-for="row in visibleGapRows"
-            :key="row.reqId"
-            class="gap-review-row"
-          >
-            <span
-              class="mono tiny-text"
-              style="color: var(--tp-accent); width: 74px; flex: 0 0 74px"
-            >
-              {{ row.reqId }}
-            </span>
-            <span class="gap-review-name">{{
-              row.sectionPath.split(" / ").slice(-1)[0]
-            }}</span>
-            <select
-              v-model="row.status"
-              class="gap-select"
-              @change="saveGap(row)"
-            >
-              <option
-                v-for="o in gapStatusOptions"
-                :key="o.value"
-                :value="o.value"
-              >
-                {{ o.label }}
-              </option>
-            </select>
-            <n-input
-              v-model:value="row.comment"
-              size="tiny"
-              placeholder="遗漏说明，失焦保存"
-              style="flex: 1"
-              @blur="saveGap(row)"
-            />
-          </div>
-          <div class="tiny-text text-dim" style="margin-top: 8px">
-            改结论立即保存，备注写完点空白处保存。发现缺用例请到「测试用例」页手动新增。
-          </div>
-        </div>
-      </div>
+      <!-- 人工评审汇总 -->
+      <ReviewSummary v-if="!loading" />
 
       <template v-if="report && !loading">
         <!-- 评分卡 -->
@@ -528,7 +277,7 @@ const severityColor: Record<string, string> = {
           </div>
         </div>
 
-        <!-- 覆盖情况 -->
+        <!-- 需求覆盖 -->
         <div class="panel">
           <h3 class="section-title">
             需求覆盖
@@ -599,28 +348,14 @@ const severityColor: Record<string, string> = {
           </div>
         </div>
 
-        <!-- 重复 -->
-        <div class="panel">
-          <h3 class="section-title">
-            疑似重复（{{ report.duplicates.length }} 组）
-          </h3>
-          <div
-            v-if="!report.duplicates.length"
-            class="empty"
-            style="padding: 20px 0"
-          >
-            没有发现重复用例
-          </div>
-          <div v-for="(d, i) in report.duplicates" :key="i" class="dup-item">
-            <div class="dup-title">{{ d.title }}</div>
-            <div class="tiny-text text-dim">{{ d.reason }}</div>
-            <div class="dup-cases">
-              <span v-for="id in d.caseIds" :key="id" class="dup-case mono">{{
-                caseTitle(id)
-              }}</span>
-            </div>
-          </div>
-        </div>
+        <!-- 疑似重复 -->
+        <DuplicateGroup
+          :duplicates="report.duplicates"
+          :case-title="caseTitle"
+          @ask-agent-for-duplicate-fix="askAgentForDuplicateFix"
+          @merge-duplicate-group="handleMergeDuplicateGroup"
+          @merge-all-duplicates="handleMergeAllDuplicates"
+        />
 
         <!-- 遗漏 -->
         <div class="panel">
@@ -644,7 +379,15 @@ const severityColor: Record<string, string> = {
             <span class="gap-name">{{
               g.sectionPath.split(" / ").slice(-1)[0]
             }}</span>
-            <span class="tiny-text text-dim">{{ g.reason }}</span>
+            <span class="tiny-text text-dim gap-reason-text">{{ g.reason }}</span>
+            <button
+              type="button"
+              class="gap-agent-btn"
+              title="需求分析师：核对遗漏测试点"
+              @click="askAgentForGapFix(g)"
+            >
+              ✦ AI 补齐用例
+            </button>
           </div>
         </div>
 
@@ -750,8 +493,6 @@ const severityColor: Record<string, string> = {
   opacity: 0.75;
 }
 
-/* 背景说明 / 纯接口定义这类条款不需要用例，用弱化的视觉和 N/A 区分，
-   避免和「真的漏了」混在一起看 */
 .coverage-cell.skip {
   border-left-color: var(--tp-border);
   opacity: 0.45;
@@ -793,35 +534,49 @@ const severityColor: Record<string, string> = {
   font-size: 13px;
 }
 
-.dup-item {
-  padding: 10px 0;
-  border-bottom: 1px dashed var(--tp-border);
-  display: flex;
-  flex-direction: column;
+.review-agent-action-btn {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1e40af;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.review-agent-action-btn:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
 }
 
-.dup-item:last-child {
-  border-bottom: none;
-}
-
-.dup-title {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.dup-cases {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.dup-case {
+.gap-agent-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
   font-size: 11px;
-  background: var(--tp-panel-2);
-  padding: 2px 8px;
+  font-weight: 500;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
   border-radius: 4px;
-  color: var(--tp-text-dim);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.gap-agent-btn:hover {
+  background: #dbeafe;
+  border-color: #93c5fd;
+  color: #1e40af;
+}
+
+.gap-reason-text {
+  flex: 1;
 }
 
 .gap-item {
@@ -848,180 +603,5 @@ const severityColor: Record<string, string> = {
   padding-left: 18px;
   font-size: 13px;
   line-height: 1.9;
-}
-
-/* 人工评审面板 */
-.hr-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 12px;
-}
-
-.hr-big {
-  font-size: 22px;
-  font-weight: 700;
-  margin-right: 8px;
-}
-
-.hr-head-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.hr-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 10px;
-  margin: 16px 0;
-}
-
-.hr-card {
-  background: var(--tp-panel-2);
-  border-left: 3px solid var(--tp-border);
-  border-radius: 5px;
-  padding: 10px 14px;
-}
-
-.hr-num {
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 1.1;
-}
-
-.hr-label {
-  font-size: 12px;
-  color: var(--tp-text-dim);
-  margin-top: 4px;
-}
-
-.hr-cost {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-  font-size: 13px;
-  padding-top: 6px;
-  border-top: 1px solid var(--tp-border);
-}
-
-.cost-row {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.cost-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  background: var(--tp-panel-2);
-  border-radius: 4px;
-  padding: 4px 10px;
-}
-
-.hr-cols {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr;
-  gap: 18px;
-  margin-top: 18px;
-}
-
-.hr-col {
-  min-width: 0;
-}
-
-.hr-sub-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--tp-text-dim);
-  margin-bottom: 8px;
-}
-
-.hr-chip {
-  display: inline-block;
-  font-size: 12px;
-  background: var(--tp-panel-2);
-  border-radius: 4px;
-  padding: 3px 9px;
-  margin: 0 6px 6px 0;
-}
-
-.hr-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  padding: 3px 0;
-}
-
-.hr-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex: 0 0 6px;
-}
-
-.hr-line-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gap-review {
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--tp-border);
-}
-
-.gap-review-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font-size: 13px;
-  margin-bottom: 8px;
-}
-
-.gap-review-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-}
-
-.gap-review-name {
-  flex: 0 0 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.gap-select {
-  flex: 0 0 128px;
-  font-size: 12px;
-  font-family: inherit;
-  color: var(--tp-text);
-  background: var(--tp-panel-2);
-  border: 1px solid var(--tp-border);
-  border-radius: 4px;
-  padding: 4px 6px;
-  cursor: pointer;
-}
-
-@media (max-width: 900px) {
-  .hr-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .hr-cols {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

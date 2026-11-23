@@ -1,4 +1,5 @@
-export { casesRouter } from '../../routes/cases.js'
-export { generateRouter, buildCase } from '../../routes/generate.js'
-export { exportRouter } from '../../routes/export.js'
-
+export { casesRouter } from './casesRouter.js'
+export { generateRouter, buildCase } from './generateRouter.js'
+export { exportRouter } from './exportRouter.js'
+export * from './service.js'
+export * from './generation.js'

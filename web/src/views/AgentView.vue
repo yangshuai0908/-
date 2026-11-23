@@ -1,1018 +1,1215 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
-import { NSpin } from "naive-ui";
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { useMessage } from "naive-ui";
+import AgentReply from "../components/AgentReply.vue";
 import {
-  api,
   streamAgentChat,
   type AgentAction,
-  type AgentMessage,
+  type AgentRole,
 } from "../api/client";
 import {
-  currentProject,
+  createHistory,
+  readHistory,
+  serializeHistory,
+  startNewSession,
+  type Turn,
+} from "../modules/agent/history";
+import {
+  activeTab,
+  agentPendingRequest,
+  agentWorkspaceContext,
+  applyAgentAction,
+  canvasFocus,
+  clearCanvasFocus,
   currentProjectId,
   currentRequirement,
   currentRequirementId,
-  requirements,
+  openAgentArtifact,
+  setCanvasFocus,
 } from "../stores/workspace";
+import { AGENT_ROLE_IDS, AGENT_ROLES, isHumanConfirmed } from "../types";
 
-const props = withDefaults(defineProps<{ compact?: boolean }>(), {
-  compact: false,
-});
-
-interface Turn extends AgentMessage {
-  actions?: AgentAction[];
-  status?: string;
-  streaming?: boolean;
-}
-
-const turns = ref<Turn[]>([]);
+const message = useMessage();
+const history = ref(createHistory());
+const session = computed(
+  () =>
+    history.value.sessions.find((item) => item.id === history.value.activeId)!,
+);
 const draft = ref("");
 const pending = ref(false);
 const error = ref("");
-const isFocused = ref(false);
-const isMultiline = ref(false);
+const role = ref<AgentRole>("team");
+const isInputFocused = ref(false);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
-const conversation = ref<HTMLElement | null>(null);
-let abortController: AbortController | null = null;
 
-const suggestions = [
-  "分析需求并拆出测试点",
-  "评审现有测试用例",
-  "生成四类测试用例",
-];
-const contextLabel = computed(() => {
-  if (!currentProject.value) return "请先选择或新建项目";
-  return currentRequirement.value
-    ? `${currentProject.value.name} · ${currentRequirement.value.label}`
-    : `${currentProject.value.name} · 尚未选择需求版本`;
+function autoResizeTextarea() {
+  const el = textareaRef.value;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(Math.max(el.scrollHeight, 24), 160)}px`;
+}
+
+watch(draft, () => {
+  nextTick(autoResizeTextarea);
 });
 
-let scrollRaf: number | null = null;
-function scrollToBottom() {
-  if (scrollRaf) return;
-  scrollRaf = requestAnimationFrame(() => {
-    scrollRaf = null;
-    if (conversation.value) {
-      conversation.value.scrollTop = conversation.value.scrollHeight;
+const conversation = ref<HTMLElement | null>(null);
+let controller: AbortController | null = null;
+let disposed = false;
+const key = (id: string) => `tp_agent_turns_${id}`;
+const contextLabel = computed(
+  () => currentRequirement.value?.label || "选择或导入需求后开始",
+);
+
+interface ActionChip {
+  icon: string;
+  label: string;
+  prompt: string;
+  role?: AgentRole;
+}
+
+const contextualChips = computed<ActionChip[]>(() => {
+  const focus = canvasFocus.value;
+  const req = currentRequirement.value;
+
+  if (focus) {
+    if (focus.type === "chunk") {
+      return [];
+    }
+    if (focus.type === "point") {
+      return [{ icon: AGENT_ROLES.analyst.icon, label: '核对测试点', prompt: '请核对当前选中测试点的原文依据、验证条件和待澄清问题，只给出建议，不生成用例或代替人工确认。', role: 'analyst' }];
+    }
+    if (focus.type === "case") {
+      return [
+        { icon: AGENT_ROLES.reviewer.icon, label: '检查用例', prompt: '检查当前选中用例的原文依据、步骤和预期，只给出问题与修改建议，不修改用例。', role: 'reviewer' },
+        { icon: AGENT_ROLES.qa_expert.icon, label: '优化用例', prompt: '基于需求原文优化当前选中用例的步骤和预期，使用 update_case 保存；保持验证目标，缺失规则先澄清，不新增用例。', role: 'qa_expert' },
+      ];
+    }
+  }
+
+  if (!req) {
+    return [
+      {
+        icon: "📋",
+        label: "项目概览",
+        prompt: "概览当前项目的需求版本与测试覆盖情况",
+        role: "team",
+      },
+    ];
+  }
+
+  const chips: ActionChip[] = [];
+  if (!req.analysis) {
+    chips.push({
+      icon: "🧠",
+      label: "分析需求",
+      prompt: "深入分析当前需求文档，自动拆解测试点与待确认问题",
+      role: "analyst",
+    });
+    chips.push({
+      icon: "🛣️",
+      label: "梳理业务主路径",
+      prompt: "梳理当前需求的主干业务路径与状态流转拓扑",
+      role: "analyst",
+    });
+  } else {
+    const confirmed = req.analysis.sections
+      .flatMap((s) => s.points)
+      .filter(isHumanConfirmed);
+    if (confirmed.length > 0) {
+      chips.push({
+        icon: "⚡",
+        label: "批量生成用例",
+        prompt: "按已确认测试点生成测试用例",
+        role: "qa_expert",
+      });
+      chips.push({
+        icon: "📊",
+        label: "覆盖度与盲区排查",
+        prompt: "检查已有测试用例对条款的覆盖情况，识别盲区",
+        role: "reviewer",
+      });
+    } else {
+      chips.push({
+        icon: "📋",
+        label: "核对待确认点",
+        prompt: "解释需求中的待澄清问题，协助我人工核对测试点",
+        role: "analyst",
+      });
+    }
+    chips.push({
+      icon: "🛡️",
+      label: "需求风险走查",
+      prompt: "走查需求中的规则矛盾、时序与并发隐患等深层风险",
+      role: "analyst",
+    });
+    chips.push({
+      icon: "🛣️",
+      label: "梳理业务路径",
+      prompt: "梳理当前需求的主干业务路径与状态流转",
+      role: "analyst",
+    });
+  }
+
+  return chips;
+});
+
+function applyChip(chip: ActionChip) {
+  draft.value = chip.prompt;
+  if (chip.role) role.value = chip.role;
+  nextTick(() => {
+    if (textareaRef.value) {
+      textareaRef.value.focus();
+      autoResizeTextarea();
     }
   });
 }
 
-function getStorageKey(projectId: string) {
-  return `tp_agent_turns_${projectId}`;
+function focusTypeLabel(type: string): string {
+  if (type === "chunk") return "条款";
+  if (type === "point") return "测试点";
+  if (type === "case") return "用例";
+  return "对象";
 }
 
-function loadTurnsFromStorage(projectId: string | null) {
-  if (!projectId) {
-    turns.value = [];
-    return;
-  }
-  try {
-    const raw = localStorage.getItem(getStorageKey(projectId));
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        turns.value = parsed.map((t: Turn) => ({
-          role: t.role,
-          content: t.content || "",
-          actions: t.actions || [],
-          streaming: false,
-          status: "",
-        }));
-        nextTick(() => scrollToBottom());
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn("Failed to load agent turns from localStorage:", e);
-  }
-  turns.value = [];
-}
-
-function saveTurnsToStorage(projectId: string | null) {
+const suggestions = computed(() => {
+  const requirement = currentRequirement.value;
+  if (!requirement) return ["概览当前项目的需求版本"];
+  if (!requirement.analysis)
+    return [
+      "分析当前需求，拆出测试点和待澄清问题",
+      "梳理当前需求的主干业务路径",
+    ];
+  const confirmed = requirement.analysis.sections
+    .flatMap((section) => section.points)
+    .filter(isHumanConfirmed);
+  return confirmed.length
+    ? ["按已确认测试点生成用例", "检查已有用例的覆盖与质量"]
+    : ["解释待澄清问题，帮我核对测试点", "检查需求中的边界与权限风险"];
+});
+function persist(projectId = currentProjectId.value, value = history.value) {
   if (!projectId) return;
   try {
-    const toSave = turns.value
-      .filter(
-        (t) =>
-          (t.content && t.content.trim().length > 0) ||
-          (t.actions && t.actions.length > 0),
-      )
-      .slice(-50)
-      .map(({ role, content, actions }) => ({
-        role,
-        content: content.trim(),
-        actions: actions ? [...actions] : undefined,
-      }));
-    localStorage.setItem(getStorageKey(projectId), JSON.stringify(toSave));
-  } catch (e) {
-    console.warn("Failed to save agent turns to localStorage:", e);
+    localStorage.setItem(key(projectId), serializeHistory(value));
+  } catch {
+    error.value = "对话未能保存到浏览器，请暂时不要刷新页面";
   }
 }
-
-function clearMemory() {
-  if (pending.value) {
-    stop();
-  }
-  turns.value = [];
-  error.value = "";
-  if (currentProjectId.value) {
-    try {
-      localStorage.removeItem(getStorageKey(currentProjectId.value));
-    } catch (e) {
-      console.warn("Failed to clear agent history:", e);
-    }
-  }
+function scroll() {
+  nextTick(() => {
+    if (conversation.value)
+      conversation.value.scrollTop = conversation.value.scrollHeight;
+  });
 }
-
-function adjustTextareaHeight() {
-  const el = textareaRef.value;
-  if (!el) return;
-  if (!draft.value) {
-    el.style.height = "22px";
-    el.style.overflowY = "hidden";
-    isMultiline.value = false;
-    return;
-  }
-  el.style.height = "auto";
-  const maxHeight = 140;
-  const scrollHeight = el.scrollHeight;
-  if (scrollHeight > maxHeight) {
-    el.style.height = `${maxHeight}px`;
-    el.style.overflowY = "auto";
-    isMultiline.value = true;
-  } else {
-    const targetHeight = Math.max(scrollHeight, 22);
-    el.style.height = `${targetHeight}px`;
-    el.style.overflowY = "hidden";
-    isMultiline.value = targetHeight > 26 || draft.value.includes("\n");
-  }
-}
-
-function resetTextareaHeight() {
-  isMultiline.value = false;
-  if (textareaRef.value) {
-    textareaRef.value.style.height = "22px";
-    textareaRef.value.style.overflowY = "hidden";
-  }
-}
-
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    if (!pending.value && currentProjectId.value && draft.value.trim()) {
-      send();
-    }
-  }
-}
-
 function stop() {
-  if (abortController) {
-    abortController.abort();
-    abortController = null;
-  }
-  if (currentProjectId.value) {
-    saveTurnsToStorage(currentProjectId.value);
-  }
+  controller?.abort();
 }
-
-watch(turns, () => scrollToBottom(), { deep: true });
-
 watch(
   currentProjectId,
-  (newId, oldId) => {
-    if (oldId && newId !== oldId) {
-      saveTurnsToStorage(oldId);
+  (id, oldId) => {
+    if (oldId) {
+      persist(oldId);
+      stop();
     }
+    try {
+      history.value = readHistory(id ? localStorage.getItem(key(id)) : null);
+    } catch {
+      history.value = createHistory();
+      message.error("对话历史读取失败，原始本地记录未覆盖");
+    }
+    draft.value = "";
     error.value = "";
-    loadTurnsFromStorage(newId);
+    scroll();
   },
   { immediate: true },
 );
-
-async function send(text = draft.value) {
-  const content = text.trim();
-  if (!content || pending.value || !currentProjectId.value) return;
-  const projectId = currentProjectId.value;
-  const requirementId = currentRequirementId.value;
-  let analysisRefresh: Promise<void> | null = null;
-
-  turns.value.push({ role: "user", content });
+function newChat() {
+  if (pending.value) return;
+  history.value = startNewSession(history.value);
   draft.value = "";
   error.value = "";
-  pending.value = true;
-  resetTextareaHeight();
-  saveTurnsToStorage(projectId);
-
-  const assistantTurn = ref<Turn>({
+  persist();
+}
+function switchSession(id: string) {
+  if (pending.value) return;
+  history.value.activeId = id;
+  error.value = "";
+  persist();
+  scroll();
+}
+watch(agentPendingRequest, (request) => {
+  if (!request) return;
+  if (request.focus) setCanvasFocus(request.focus);
+  if (request.role) role.value = request.role;
+  draft.value = request.prompt;
+  agentPendingRequest.value = null;
+  if (request.autoSend && !pending.value) void send();
+});
+function handleKey(event: KeyboardEvent) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    void send();
+  }
+}
+async function send(text = draft.value) {
+  const content = text.trim(),
+    projectId = currentProjectId.value,
+    requirementId = currentRequirementId.value;
+  if (!content || !projectId || pending.value) return;
+  const requestHistory = history.value,
+    requestSession = session.value,
+    workspace = agentWorkspaceContext();
+  let automaticView = activeTab.value,
+    processedActions = 0;
+  requestSession.turns.push({ role: "user", content });
+  const messages = requestSession.turns
+    .filter((turn) => turn.content.trim())
+    .slice(-20)
+    .map(({ role, content }) => ({ role, content: content.slice(0, 2500) }));
+  const assistant = reactive<Turn>({
     role: "assistant",
     content: "",
     actions: [],
-    status: "正在分析任务…",
     streaming: true,
+    status: "正在读取需求与选中对象…",
+    roleType: role.value,
   });
-  turns.value.push(assistantTurn.value);
-  scrollToBottom();
-
-  abortController = new AbortController();
-
-  try {
-    const messages = turns.value
-      .filter((t) => t !== assistantTurn.value && t.content.trim().length > 0)
-      .slice(-20)
-      .map(({ role, content: message }) => ({
-        role,
-        content: message.slice(0, 2500),
-      }));
-
-    await streamAgentChat(
-      {
-        projectId,
-        requirementId,
-        messages,
-      },
-      (evt) => {
-        if (evt.type === "status") {
-          assistantTurn.value.status = evt.message || "正在分析任务…";
-        } else if (evt.type === "action" && evt.action) {
-          if (!assistantTurn.value.actions) assistantTurn.value.actions = [];
-          assistantTurn.value.actions.push(evt.action);
-        } else if (evt.type === "delta" && evt.delta) {
-          assistantTurn.value.content += evt.delta;
-          assistantTurn.value.status = "";
-        } else if (evt.type === "done") {
-          if (evt.message) assistantTurn.value.content = evt.message;
-          if (evt.actions) assistantTurn.value.actions = evt.actions;
-          if (
-            !analysisRefresh &&
-            assistantTurn.value.actions?.some(
-              (action) => action.tool === "analyze_requirement",
-            )
-          ) {
-            const stamps = new Map(
-              requirements.value.map((requirement) => [
-                requirement.id,
-                `${requirement.analysis?.id ?? ""}:${requirement.analysis?.updatedAt ?? ""}`,
-              ]),
-            );
-            analysisRefresh = api
-              .listRequirements(projectId)
-              .then((list) => {
-                if (currentProjectId.value !== projectId) return;
-                for (const incoming of list) {
-                  const target = requirements.value.find(
-                    (requirement) => requirement.id === incoming.id,
-                  );
-                  if (
-                    target &&
-                    stamps.get(target.id) ===
-                      `${target.analysis?.id ?? ""}:${target.analysis?.updatedAt ?? ""}`
-                  ) {
-                    target.analysis = incoming.analysis;
-                  }
-                }
-              })
-              .catch((e: unknown) => {
-                if (currentProjectId.value === projectId) {
-                  error.value = `需求分析已完成，但同步失败，请到需求页刷新分析：${e instanceof Error ? e.message : "请求失败"}`;
-                }
-              });
-          }
-          assistantTurn.value.status = "";
-          assistantTurn.value.streaming = false;
-        } else if (evt.type === "error") {
-          error.value = evt.error || "Agent 执行异常";
-          assistantTurn.value.status = "";
-          assistantTurn.value.streaming = false;
-        }
-        scrollToBottom();
-      },
-      abortController.signal,
-    );
-    await analysisRefresh;
-  } catch (e) {
-    if ((e as Error).name !== "AbortError") {
-      error.value = (e as Error).message;
+  requestSession.turns.push(assistant);
+  draft.value = "";
+  pending.value = true;
+  error.value = "";
+  persist(projectId, requestHistory);
+  scroll();
+  const requestController = new AbortController();
+  controller = requestController;
+  const scopeMatches = () =>
+    !disposed &&
+    currentProjectId.value === projectId &&
+    currentRequirementId.value === requirementId;
+  function actionCompleted(action: AgentAction) {
+    assistant.actions!.push(action);
+    processedActions++;
+    if (!scopeMatches()) return;
+    applyAgentAction(action);
+    if (activeTab.value === automaticView) {
+      openAgentArtifact(action);
+      automaticView = activeTab.value;
     }
+  }
+  try {
+    await streamAgentChat(
+      { projectId, requirementId, workspace, role: role.value, messages },
+      (event) => {
+        if (event.type === "status")
+          assistant.status = event.message || "正在执行…";
+        if (event.type === "delta") {
+          assistant.content += event.delta || "";
+          assistant.status = "";
+        }
+        if (event.type === "action" && event.action)
+          actionCompleted(event.action);
+        if (event.type === "done") {
+          if (event.message !== undefined) assistant.content = event.message;
+          for (const action of (event.actions || []).slice(processedActions))
+            actionCompleted(action);
+          assistant.status = "";
+        }
+        if (event.type === "error") throw new Error(event.error || "执行失败");
+        scroll();
+      },
+      requestController.signal,
+    );
+  } catch (e) {
+    if ((e as Error).name !== "AbortError" && scopeMatches())
+      error.value = (e as Error).message;
   } finally {
-    assistantTurn.value.streaming = false;
-    assistantTurn.value.status = "";
+    assistant.streaming = false;
+    assistant.status = requestController.signal.aborted
+      ? "已停止接收回复；已保存的成果可在右侧核对"
+      : "";
     pending.value = false;
-    abortController = null;
-    saveTurnsToStorage(projectId);
-    scrollToBottom();
+    if (controller === requestController) controller = null;
+    persist(projectId, requestHistory);
+    scroll();
   }
 }
+onBeforeUnmount(() => {
+  disposed = true;
+  stop();
+});
 </script>
 
 <template>
-  <section class="page agent-page" :class="{ compact: props.compact }">
-    <div v-if="!props.compact" class="agent-heading">
-      <div>
-        <div class="eyebrow">TESTPILOT AGENT</div>
-        <h1>测试用例设计助手</h1>
-        <p>
-          从需求理解与测试点核对开始，再进行用例设计。Agent
-          会读取项目数据并调用工具，需配置真实大模型。
-        </p>
+  <section class="agent-workspace" aria-label="测试设计 Agent">
+    <header class="agent-header">
+      <div class="header-left">
+        <h1>测试用例助手</h1>
       </div>
-      <div class="heading-actions">
-        <button
-          v-if="turns.length"
-          type="button"
-          class="new-chat-btn"
-          title="开启新对话 / 清空当前记忆"
-          @click="clearMemory"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="13"
-            height="13"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M12 4v16m8-8H4" />
-          </svg>
-          开启新对话
-        </button>
-        <div class="context-chip">
-          <span class="context-dot" />{{ contextLabel }}
-        </div>
-      </div>
-    </div>
-    <div v-else class="compact-context">
-      <span class="compact-label" :title="contextLabel">{{ contextLabel }}</span>
       <button
-        v-if="turns.length"
-        type="button"
-        class="compact-new-chat-btn"
-        title="开启新对话 / 清空当前记忆"
-        @click="clearMemory"
+        class="new-chat-btn"
+        :disabled="pending || !currentProjectId"
+        @click="newChat"
       >
-        <svg
-          viewBox="0 0 24 24"
-          width="11"
-          height="11"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M12 4v16m8-8H4" />
-        </svg>
-        <span>新对话</span>
+        + 新对话
       </button>
+    </header>
+
+    <div class="context">
+      <div class="context-req">
+        <span class="context-icon">📄</span>
+        <span class="context-text" :title="contextLabel">{{
+          contextLabel
+        }}</span>
+      </div>
+      <select
+        v-if="currentProjectId"
+        aria-label="对话记录"
+        class="session-select"
+        :value="history.activeId"
+        :disabled="pending"
+        @change="switchSession(($event.target as HTMLSelectElement).value)"
+      >
+        <option
+          v-for="item in history.sessions"
+          :key="item.id"
+          :value="item.id"
+        >
+          {{
+            item.turns
+              .find((turn) => turn.role === "user")
+              ?.content.slice(0, 24) || "新对话"
+          }}
+        </option>
+      </select>
     </div>
 
-    <div class="agent-card">
-      <div v-if="!turns.length" class="welcome">
-        <div class="welcome-mark">TP</div>
-        <h2>先一起核对需求与测试范围</h2>
+    <div ref="conversation" class="conversation" aria-live="polite">
+      <div v-if="!session.turns.length" class="welcome">
+        <div class="welcome-icon">✨</div>
+        <h2>把测试设计交给 Agent 推进</h2>
         <p>
-          我可以分析需求、拆出测试点与待确认问题，再协助生成用例、比较版本和评审。需求分析不会修改已有用例。
+          描述你的测试意图。Agent
+          将自动分析业务路径、扫描规则缺陷、提炼测试点并生成带依据的测试用例。
         </p>
-        <div class="suggestions">
+        <div class="welcome-chips">
           <button
             v-for="item in suggestions"
             :key="item"
-            type="button"
-            :disabled="!currentProjectId || pending"
+            class="welcome-chip"
+            :disabled="!currentProjectId"
             @click="send(item)"
           >
-            {{ item }} <span>→</span>
+            <span>{{ item }}</span>
+            <span class="chip-arrow">↗</span>
           </button>
         </div>
       </div>
 
-      <div v-else ref="conversation" class="conversation">
-        <article
-          v-for="(turn, index) in turns"
-          :key="index"
-          class="turn"
-          :class="turn.role"
-        >
-          <div class="turn-label">
-            {{ turn.role === "user" ? "你" : "TestPilot Agent" }}
-          </div>
-
-          <div v-if="turn.actions?.length" class="actions">
-            <div
-              v-for="(action, i) in turn.actions"
-              :key="`${action.tool}-${i}`"
-              class="action-row"
-            >
-              <span class="action-check">✓</span>
-              <span>{{ action.title }}</span>
+      <article
+        v-for="(turn, index) in session.turns"
+        :key="index"
+        class="turn"
+        :class="turn.role"
+      >
+        <div class="turn-meta">
+          <template v-if="turn.role === 'user'">
+            <span class="turn-label">我</span>
+            <div class="turn-avatar user-avatar" title="当前操作者">
+              <svg viewBox="0 0 20 20" width="12" height="12" fill="currentColor">
+                <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd" />
+              </svg>
             </div>
+          </template>
+          <template v-else>
+            <div class="turn-avatar assistant-avatar" title="TestPilot 智能助手">
+              <svg viewBox="0 0 20 20" width="12" height="12" fill="currentColor">
+                <path d="M10 2a1 1 0 011 1v1.07A7.002 7.002 0 0117 11v3a3 3 0 01-3 3H6a3 3 0 01-3-3v-3a7.002 7.002 0 016-6.93V3a1 1 0 011-1zm-3 9a1.5 1.5 0 100 3 1.5 1.5 0 000-3zm6 0a1.5 1.5 0 100 3 1.5 1.5 0 000-3z" />
+              </svg>
+            </div>
+            <span class="turn-label">TestPilot Copilot</span>
+            <span
+              v-if="turn.roleType"
+              class="role-tag"
+              :title="`工作角色：${AGENT_ROLES[turn.roleType]?.label || turn.roleType}`"
+            >
+              <span class="role-tag-icon">{{ AGENT_ROLES[turn.roleType]?.icon || '🤖' }}</span>
+              <span>{{ AGENT_ROLES[turn.roleType]?.label || turn.roleType }}</span>
+            </span>
+          </template>
+        </div>
+
+        <div v-if="turn.role === 'user'" class="user-content">
+          {{ turn.content }}
+        </div>
+
+        <div v-else class="assistant-content">
+          <AgentReply v-if="turn.content" :content="turn.content" />
+
+          <div
+            v-if="turn.status"
+            class="status-indicator"
+            :class="{ aborted: !turn.streaming }"
+          >
+            <span v-if="turn.streaming" class="status-spinner" />
+            <span v-else class="status-icon">⏹</span>
+            <span>{{ turn.status }}</span>
           </div>
 
-          <div v-if="turn.content" class="bubble">
-            {{ turn.content
-            }}<span v-if="turn.streaming" class="stream-cursor">▌</span>
+          <div
+            v-for="(action, actionIndex) in turn.actions"
+            :key="actionIndex"
+            class="action-result"
+            :class="{ failed: action.error }"
+          >
+            <div class="action-header">
+              <span class="action-tag">{{
+                action.error ? "执行异常" : "工具调用"
+              }}</span>
+              <strong class="action-title">{{ action.title }}</strong>
+            </div>
+            <button
+              v-if="action.artifact && !action.error"
+              class="action-open-btn"
+              @click="openAgentArtifact(action)"
+            >
+              {{ action.tool === 'scan_vulnerabilities' ? '核对并处理建议 ↗' : '打开对应成果 ↗' }}
+            </button>
+            <details v-if="action.data" class="action-details">
+              <summary>查看执行返回数据</summary>
+              <pre>{{ JSON.stringify(action.data, null, 2) }}</pre>
+            </details>
           </div>
+        </div>
+      </article>
+    </div>
 
-          <div v-if="turn.status && turn.streaming" class="bubble thinking">
-            <n-spin size="small" /> <span>{{ turn.status }}</span>
-          </div>
-        </article>
+    <footer class="composer">
+      <!-- 动态上下文快捷指令胶囊 -->
+      <div v-if="contextualChips.length" class="chips-container">
+        <div class="chips-list">
+          <button
+            v-for="(chip, idx) in contextualChips"
+            :key="idx"
+            class="chip-capsule"
+            :disabled="pending || !currentProjectId"
+            @click="applyChip(chip)"
+          >
+            <span class="chip-icon">{{ chip.icon }}</span>
+            <span class="chip-label">{{ chip.label }}</span>
+          </button>
+        </div>
       </div>
 
-      <div class="composer-wrap">
-        <div v-if="error" class="error-note">{{ error }}</div>
+      <p v-if="error" class="error-msg" role="alert">{{ error }}</p>
 
-        <!-- ChatGPT 风格胶囊输入框：初始胶囊药丸状、随内容自增高、支持打断与发送 -->
-        <div
-          class="chatgpt-capsule"
-          :class="{
-            focused: isFocused,
-            multiline: isMultiline,
-            disabled: !currentProjectId,
-          }"
-        >
+      <!-- ChatGPT 风格胶囊输入卡片 -->
+      <div
+        class="chatgpt-capsule"
+        :class="{
+          'is-focused': isInputFocused,
+          'has-content': Boolean(draft.trim()),
+          'is-disabled': !currentProjectId,
+        }"
+      >
+        <!-- 画布焦点嵌入胶囊顶部 -->
+        <div v-if="canvasFocus" class="capsule-focus-bar">
+          <div class="focus-pill-meta">
+            <span class="focus-type-badge">{{ focusTypeLabel(canvasFocus.type) }}</span>
+            <span class="focus-pill-title" :title="canvasFocus.title">{{ canvasFocus.title }}</span>
+          </div>
+          <button
+            class="focus-pill-close"
+            aria-label="取消选中对象"
+            title="取消对齐"
+            @click="clearCanvasFocus"
+          >
+            ✕
+          </button>
+        </div>
+
+        <!-- 文本输入区 -->
+        <div class="capsule-input-row">
           <textarea
             ref="textareaRef"
             v-model="draft"
-            class="capsule-textarea"
-            :placeholder="
-              props.compact
-                ? '输入指令或提问（Enter 发送）…'
-                : '给设计助手发送指令（例如：分析需求并拆出测试点）'
-            "
-            :disabled="!currentProjectId"
             rows="1"
-            @input="adjustTextareaHeight"
-            @keydown="handleKeydown"
-            @focus="isFocused = true"
-            @blur="isFocused = false"
+            aria-label="给 Agent 的指令"
+            :disabled="!currentProjectId"
+            :placeholder="
+              canvasFocus
+                ? `针对${focusTypeLabel(canvasFocus.type)}「${canvasFocus.title}」向 Agent 提问或指派任务…`
+                : '描述要完成的工作，Shift+Enter 换行…'
+            "
+            @focus="isInputFocused = true"
+            @blur="isInputFocused = false"
+            @input="autoResizeTextarea"
+            @keydown="handleKey"
           />
+        </div>
 
-          <div class="capsule-actions">
-            <!-- 正在生成中：显示 ChatGPT 黑色方形打断/停止按钮 -->
+        <!-- 胶囊底栏：侧重模式胶囊 + ChatGPT 圆形发送/停止按钮 -->
+        <div class="capsule-bottom-bar">
+          <div class="role-capsule" :title="`当前角色：${AGENT_ROLES[role].label}（点击切换）`">
+            <span class="role-icon">{{ AGENT_ROLES[role].icon }}</span>
+            <span class="role-name">{{ AGENT_ROLES[role].label }}</span>
+            <span class="role-chevron">▾</span>
+            <select
+              v-model="role"
+              aria-label="工作角色"
+              :disabled="pending"
+              class="role-select"
+            >
+              <option v-for="id in AGENT_ROLE_IDS" :key="id" :value="id">{{ AGENT_ROLES[id].label }}</option>
+            </select>
+          </div>
+
+          <div class="capsule-actions-right">
             <button
               v-if="pending"
               type="button"
-              class="action-btn stop-btn"
-              title="停止生成 (打断)"
-              @click="stop()"
+              class="chatgpt-btn stop"
+              title="停止回复"
+              @click="stop"
             >
               <span class="stop-icon" />
             </button>
-
-            <!-- 待命中：显示向上箭头发送按钮 -->
             <button
               v-else
               type="button"
-              class="action-btn send-btn"
-              :class="{
-                active: Boolean(draft.trim()) && Boolean(currentProjectId),
-              }"
+              class="chatgpt-btn send"
+              :class="{ ready: Boolean(draft.trim()) && Boolean(currentProjectId) }"
               :disabled="!currentProjectId || !draft.trim()"
-              title="发送消息"
+              title="发送指令 (Enter)"
               @click="send()"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="16"
-                height="16"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                 <line x1="12" y1="19" x2="12" y2="5" />
                 <polyline points="5 12 12 5 19 12" />
               </svg>
             </button>
           </div>
         </div>
-
-        <div class="composer-footer">
-          <span
-            >需求分析不修改已有用例；测试点确认仅表示人工认可目标，待确认问题仍需核对。</span
-          >
-          <span class="shortcut-tip">Enter 发送，Shift + Enter 换行</span>
-        </div>
       </div>
-    </div>
+
+      <div class="composer-footer">
+        <small>{{ AGENT_ROLES[role].description }}</small>
+      </div>
+    </footer>
   </section>
 </template>
 
 <style scoped>
-.agent-page {
-  max-width: 1180px;
-  margin: 0 auto;
-}
-.agent-page.compact {
-  width: 100%;
+.agent-workspace {
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  margin: 0;
+  background: #ffffff;
 }
-.compact-context {
-  flex: 0 0 auto;
-  padding: 6px 12px;
-  border-bottom: 1px solid #edf0f3;
-  color: #87929d;
-  font-size: 11px;
+
+.agent-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  min-height: 32px;
-  box-sizing: border-box;
-}
-.compact-label {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-}
-.compact-new-chat-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  background: #ffffff;
-  border: 1px solid #dcdfe4;
-  border-radius: 4px;
-  padding: 2px 7px;
-  font-size: 11px;
-  color: #556270;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  white-space: nowrap;
-  line-height: 1.4;
-  flex-shrink: 0;
-}
-.compact-new-chat-btn:hover {
-  background: #f1f4f8;
-  color: #1f364d;
-  border-color: #bcc6d2;
-}
-.agent-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 20px;
-  margin-bottom: 18px;
-}
-.heading-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.new-chat-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: #ffffff;
-  border: 1px solid #d3d8df;
-  border-radius: 5px;
-  padding: 7px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #435160;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  white-space: nowrap;
-}
-.new-chat-btn:hover {
-  background: #f4f6f8;
-  color: #1f364d;
-  border-color: #b5c0cc;
-}
-.eyebrow {
-  color: #758394;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid #f1f5f9;
 }
 h1 {
-  margin: 7px 0 5px;
-  color: #263442;
-  font-size: 24px;
-  font-weight: 650;
-  letter-spacing: -0.03em;
+  font-size: 17px;
+  margin: 2px 0 0;
+  font-weight: 700;
+  color: #0f172a;
 }
-.agent-heading p {
-  margin: 0;
-  color: #7b8794;
-  font-size: 13px;
+.new-chat-btn {
+  font-size: 12px;
+  color: #3b82f6;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 5px 11px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.15s ease;
 }
-.context-chip {
-  max-width: 42%;
+.new-chat-btn:hover:not(:disabled) {
+  background: #dbeafe;
+}
+.new-chat-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.context {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  padding: 8px 22px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 12px;
+  gap: 12px;
+  color: #64748b;
+}
+.context-req {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
-  padding: 8px 11px;
-  border: 1px solid var(--tp-border);
-  border-radius: 5px;
-  background: #fff;
-  color: #657383;
-  font-size: 11px;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.context-dot {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 6px;
-  border-radius: 50%;
-  background: #4d8b6c;
+.context-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  color: #334155;
 }
-.agent-card {
-  min-height: min(640px, calc(100vh - 210px));
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--tp-border);
+.session-select {
+  max-width: 50%;
+  font: inherit;
+  font-size: 12px;
+  color: #475569;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
-  background: #fff;
+  padding: 4px 8px;
 }
-.compact .agent-card {
+
+.conversation {
   flex: 1;
   min-height: 0;
-  border: 0;
-  border-radius: 0;
+  overflow-y: auto;
+  padding: 20px 22px;
 }
+
 .welcome {
-  width: min(560px, 100%);
+  padding: 40px 10px;
+  max-width: 480px;
   margin: auto;
-  padding: 52px 24px;
   text-align: center;
 }
-.welcome-mark {
-  width: 42px;
-  height: 42px;
+.welcome-icon {
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 16px;
   display: grid;
   place-items: center;
-  margin: 0 auto 18px;
-  border-radius: 7px;
-  background: #243b53;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 700;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  color: #2563eb;
+  font-size: 20px;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.15);
 }
 .welcome h2 {
-  margin: 0 0 9px;
-  color: #2c3947;
-  font-size: 19px;
-  font-weight: 620;
+  font-size: 18px;
+  color: #0f172a;
+  margin: 0 0 8px;
+  font-weight: 700;
 }
 .welcome p {
-  margin: 0 auto;
-  color: #7b8794;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 20px;
+}
+.welcome-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.welcome-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #334155;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+.welcome-chip:hover:not(:disabled) {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+.chip-arrow {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 24px;
   font-size: 13px;
   line-height: 1.7;
 }
-.suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 24px;
-}
-.suggestions button {
-  border: 1px solid #e2e6eb;
-  border-radius: 5px;
-  padding: 9px 11px;
-  background: #fff;
-  color: #566575;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.suggestions button:hover:not(:disabled) {
-  border-color: #bac8d5;
-  background: #f8fafb;
-  color: #304d69;
-}
-.suggestions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-.suggestions span {
-  margin-left: 5px;
-  color: #8995a1;
-}
-.conversation {
-  flex: 1;
-  overflow: auto;
-  padding: 28px clamp(16px, 6vw, 72px);
-}
-.turn {
-  max-width: 760px;
-  margin: 0 auto 22px;
-}
+
+/* --- 用户消息（居右） --- */
 .turn.user {
-  display: flex;
-  flex-direction: column;
   align-items: flex-end;
+  margin-left: auto;
+  max-width: 88%;
 }
-.turn-label {
-  margin-bottom: 6px;
-  color: #84909c;
-  font-size: 11px;
-}
-.bubble {
-  max-width: 100%;
-  white-space: pre-wrap;
-  color: #344252;
-  font-size: 13px;
-  line-height: 1.75;
-}
-.user .bubble {
-  max-width: 78%;
-  padding: 10px 13px;
-  border-radius: 6px;
-  background: #edf2f6;
-}
-.thinking {
+.turn.user .turn-meta {
   display: flex;
   align-items: center;
-  gap: 9px;
-  color: #758394;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 6px;
 }
-.actions {
-  display: grid;
-  gap: 5px;
-  margin-top: 10px;
+.turn.user .turn-label {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 600;
+}
+.user-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.user-content {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #ffffff;
+  border-radius: 16px 3px 16px 16px;
+  padding: 10px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 100%;
+  width: fit-content;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.18);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.user-content ::selection {
+  background: rgba(255, 255, 255, 0.35);
+  color: #ffffff;
+}
+
+/* --- 模型消息（居左） --- */
+.turn.assistant {
+  align-items: flex-start;
+  margin-right: auto;
+  width: 100%;
+  max-width: 98%;
+}
+.turn.assistant .turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 8px;
 }
-.action-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  color: #738091;
-  font-size: 11px;
-}
-.action-check {
-  color: #4d8b6c;
-  font-weight: 700;
-}
-.stream-cursor {
-  display: inline-block;
-  margin-left: 2px;
-  color: #3b82f6;
-  font-weight: 700;
-  animation: stream-blink 0.8s infinite;
-}
-@keyframes stream-blink {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
-}
-
-/* ── ChatGPT 胶囊输入区 ── */
-.composer-wrap {
-  padding: 12px 16px 10px;
-  border-top: 1px solid #edf0f3;
-  background: #ffffff;
-}
-.error-note {
-  margin: 0 0 6px;
-  color: #b85858;
-  font-size: 11.5px;
-}
-
-.chatgpt-capsule {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 6px 8px 6px 15px;
-  background: #f8fafc;
-  border: 1px solid #dce2e8;
-  border-radius: 22px; /* 精致圆润的胶囊药丸 */
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.chatgpt-capsule.multiline {
-  border-radius: 16px; /* 多行文本平滑微圆角 */
-}
-
-.chatgpt-capsule.focused {
-  background: #ffffff;
-  border-color: #243b53;
-  box-shadow:
-    0 0 0 1px #243b53,
-    0 3px 12px rgba(36, 59, 83, 0.08);
-}
-
-.chatgpt-capsule.disabled {
-  background: #f1f4f7;
-  border-color: #e2e7ec;
-  cursor: not-allowed;
-}
-
-.capsule-textarea {
-  box-sizing: border-box;
-  flex: 1;
-  min-height: 22px;
-  max-height: 140px;
+.assistant-avatar {
+  width: 22px;
   height: 22px;
-  padding: 0;
-  margin: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  resize: none;
-  font-family: inherit;
-  font-size: 13.5px;
-  line-height: 22px;
-  color: #1e293b;
-  overflow: hidden; /* 默认隐藏滚动条，只有文本超出 maxHeight 时才动态显示 */
-  scrollbar-width: thin;
-}
-
-.capsule-textarea::-webkit-scrollbar {
-  width: 4px;
-}
-.capsule-textarea::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 2px;
-}
-
-.capsule-textarea::placeholder {
-  color: #94a3b8;
-  font-size: 13px;
-}
-
-.capsule-textarea:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.capsule-actions {
-  flex-shrink: 0;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
+  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.25);
+  flex-shrink: 0;
+}
+.turn.assistant .turn-label {
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+}
+.role-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+  padding: 1px 8px;
+  border-radius: 9999px;
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.04);
+}
+.role-tag-icon {
+  font-size: 11px;
 }
 
-.action-btn {
+.assistant-content {
+  width: 100%;
+  padding-left: 2px;
+}
+
+/* 状态提示与停止提示 */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #2563eb;
+  font-size: 12px;
+  margin-top: 8px;
+  padding: 5px 12px;
+  background: #eff6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  width: fit-content;
+}
+.status-indicator.aborted {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+.status-icon {
+  font-size: 11px;
+  opacity: 0.8;
+}
+.status-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #bfdbfe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.action-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin-top: 10px;
+  background: #f8fafc;
+}
+.action-result.failed {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.action-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.action-tag {
+  font-size: 10px;
+  font-weight: 600;
+  background: #e2e8f0;
+  color: #475569;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.action-result.failed .action-tag {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.action-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1e293b;
+}
+.action-open-btn {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2563eb;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  margin-top: 2px;
+}
+.action-open-btn:hover {
+  background: #dbeafe;
+}
+.action-details {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 4px;
+}
+.action-details pre {
+  margin-top: 6px;
+  padding: 8px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  max-height: 180px;
+  overflow: auto;
+  font-family: ui-monospace, monospace;
+}
+
+.composer {
+  padding: 10px 18px 12px;
+  border-top: 1px solid #f1f5f9;
+  background: #ffffff;
+  flex-shrink: 0;
+}
+
+/* 顶部上下文快捷指令 - ChatGPT 药丸胶囊 */
+.chips-container {
+  margin-bottom: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.chips-container::-webkit-scrollbar {
+  display: none;
+}
+.chips-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  padding: 2px 0;
+}
+.chip-capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+  white-space: nowrap;
+}
+.chip-capsule:hover:not(:disabled) {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.08);
+}
+.chip-capsule:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chip-icon {
+  font-size: 12px;
+}
+
+.error-msg {
+  color: #dc2626;
+  font-size: 12px;
+  margin: 0 0 6px;
+}
+
+/* ChatGPT 风格输入胶囊卡片 */
+.chatgpt-capsule {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  padding: 10px 14px 8px 14px;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chatgpt-capsule.is-focused {
+  background: #ffffff;
+  border-color: #3b82f6;
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.12);
+}
+.chatgpt-capsule.is-disabled {
+  opacity: 0.6;
+  background: #f1f5f9;
+}
+
+/* 嵌入胶囊顶部的对齐焦点小栏 */
+.capsule-focus-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #eff6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 9999px;
+  padding: 2px 8px 2px 6px;
+  font-size: 11px;
+}
+.focus-pill-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+}
+.focus-type-badge {
+  font-size: 9px;
+  font-weight: 700;
+  background: #2563eb;
+  color: #ffffff;
+  padding: 1px 5px;
+  border-radius: 9999px;
+  flex-shrink: 0;
+}
+.focus-pill-title {
+  color: #1e40af;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.focus-pill-close {
+  background: transparent;
+  border: none;
+  color: #93c5fd;
+  font-size: 12px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+}
+.focus-pill-close:hover {
+  color: #1e40af;
+}
+
+/* 输入框核心区 */
+.capsule-input-row {
+  width: 100%;
+}
+.capsule-input-row textarea {
+  display: block;
+  width: 100%;
+  min-height: 24px;
+  max-height: 160px;
+  height: 24px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #0f172a;
+  padding: 0;
+}
+.capsule-input-row textarea::placeholder {
+  color: #94a3b8;
+}
+
+/* 胶囊底栏 */
+.capsule-bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 2px;
+}
+
+/* 侧重模式胶囊 (ChatGPT 模式切换风格) */
+.role-capsule {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 9999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+.role-capsule:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e293b;
+}
+.role-icon {
+  font-size: 11px;
+}
+.role-name {
+  font-weight: 500;
+  font-size: 11px;
+}
+.role-chevron {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-left: 1px;
+}
+.role-select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+  width: 100%;
+  height: 100%;
+}
+
+/* ChatGPT 圆形发送/停止按钮 */
+.capsule-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chatgpt-btn {
   width: 28px;
   height: 28px;
   border-radius: 50%;
+  display: grid;
+  place-items: center;
   border: none;
-  outline: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 0;
 }
-
-/* 发送按钮（禁用与激活态） */
-.send-btn {
+.chatgpt-btn.send {
   background: #e2e8f0;
   color: #94a3b8;
 }
-
-.send-btn.active {
-  background: #243b53;
+.chatgpt-btn.send.ready {
+  background: #0f172a;
   color: #ffffff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.25);
 }
-
-.send-btn.active:hover {
-  background: #17283c;
+.chatgpt-btn.send.ready:hover {
+  background: #2563eb;
   transform: scale(1.05);
 }
-
-.send-btn:disabled {
+.chatgpt-btn.send:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
-
-/* 打断 / 停止生成按钮（ChatGPT 风格黑色圆钮 + 白色方形） */
-.stop-btn {
+.chatgpt-btn.stop {
   background: #0f172a;
   color: #ffffff;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.2);
-  animation: pulse-stop 2s infinite;
 }
-
-.stop-btn:hover {
-  background: #000000;
-  transform: scale(1.06);
+.chatgpt-btn.stop:hover {
+  background: #ef4444;
 }
-
 .stop-icon {
-  display: block;
   width: 9px;
   height: 9px;
-  background: #ffffff;
-  border-radius: 1.5px;
-}
-
-@keyframes pulse-stop {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(15, 23, 42, 0.3);
-  }
-  50% {
-    box-shadow: 0 0 0 4px rgba(15, 23, 42, 0);
-  }
+  background: currentColor;
+  border-radius: 2px;
 }
 
 .composer-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  margin-top: 6px;
-  color: #94a3b8;
-  font-size: 11px;
-}
-
-.shortcut-tip {
-  color: #94a3b8;
-  font-size: 10.5px;
-}
-
-@media (max-width: 620px) {
-  .agent-heading {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .context-chip {
-    max-width: 100%;
-  }
-  .agent-card {
-    min-height: calc(100vh - 278px);
-  }
-  .welcome {
-    padding: 36px 16px;
-  }
-  .composer-wrap {
-    padding: 10px 12px;
-  }
-  .chatgpt-capsule {
-    padding: 6px 8px 6px 14px;
-    border-radius: 20px;
-  }
-  .composer-footer {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 4px;
-  }
-}
-.compact .conversation {
-  min-height: 0;
-  padding: 16px 14px;
-}
-.compact .composer-wrap {
-  padding: 10px 14px 8px;
-}
-.compact .composer-footer {
-  justify-content: center;
+  margin-top: 8px;
   text-align: center;
-  margin-top: 5px;
 }
-.compact .composer-footer .shortcut-tip {
-  display: none;
-}
-.compact .composer-footer span {
-  font-size: 10.5px;
-}
-.compact .welcome {
-  padding: 24px 16px 16px;
-}
-.compact .welcome-mark {
-  width: 34px;
-  height: 34px;
-  margin: 0 auto 10px;
+.composer-footer small {
+  color: #94a3b8;
   font-size: 11px;
-}
-.compact .welcome h2 {
-  font-size: 16px;
-  margin-bottom: 6px;
-}
-.compact .welcome p {
-  font-size: 12px;
-  line-height: 1.5;
-  color: #8792a0;
-}
-.compact .suggestions {
-  margin-top: 14px;
-  gap: 6px;
-}
-.compact .suggestions button {
-  padding: 6px 10px;
-  font-size: 11.5px;
-}
-.compact .user .bubble {
-  max-width: 92%;
 }
 </style>

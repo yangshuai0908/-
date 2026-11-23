@@ -11,6 +11,9 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@testpilot/shared": ["../shared/src/index.ts"]
+    },
     "noEmit": true
   },
   "include": ["src/**/*.ts"]

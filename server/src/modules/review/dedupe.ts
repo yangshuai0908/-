@@ -1,5 +1,6 @@
-import type { TestCase } from '../store/schema.js'
-import { normalize } from '../validate/evidence.js'
+import type { Evidence, TestCase } from '../../store/schema.js'
+import { nowIso } from '../../utils.js'
+import { normalize } from '../../validate/evidence.js'
 
 export interface DupCandidate {
   caseIds: string[]
@@ -162,4 +163,146 @@ export function prescreenDuplicates(cases: TestCase[]): DupCandidate[] {
   }
 
   return out.sort((x, y) => y.score - x.score)
+}
+
+/** 将两条高相似度的重复用例智能合并为一条包含完整条款依据与步骤的用例 */
+export function mergeTwoCases(primary: TestCase, secondary: TestCase): TestCase {
+  // 1. Evidence: union by reqId + quote
+  const evMap = new Map<string, Evidence>()
+  for (const e of [...primary.evidence, ...secondary.evidence]) {
+    const k = `${e.reqId}::${e.quote}`
+    if (!evMap.has(k)) evMap.set(k, e)
+  }
+  const evidence = Array.from(evMap.values())
+
+  // 2. Assumptions: union
+  const assumptions = Array.from(new Set([...primary.assumptions, ...secondary.assumptions]))
+
+  // 3. Precondition: if primary is empty, use secondary; or combine if distinct
+  let precondition = primary.precondition
+  if (!precondition && secondary.precondition) {
+    precondition = secondary.precondition
+  } else if (secondary.precondition && !precondition.includes(secondary.precondition) && !secondary.precondition.includes(precondition)) {
+    precondition = `${precondition}；${secondary.precondition}`
+  }
+
+  // 4. Steps: keep primary steps, and if secondary has distinct actionable steps, combine
+  let steps = [...primary.steps]
+  const primaryStepsStr = primary.steps.join(' ')
+  for (const step of secondary.steps) {
+    if (!primaryStepsStr.includes(step.trim())) {
+      steps.push(step)
+    }
+  }
+  if (!steps.length) steps = [...secondary.steps]
+
+  // 5. Expected: union of distinct expectations
+  const expectedSet = new Set(primary.expected.map(e => e.trim()))
+  const expected = [...primary.expected]
+  for (const exp of secondary.expected) {
+    if (!expectedSet.has(exp.trim())) {
+      expected.push(exp)
+      expectedSet.add(exp.trim())
+    }
+  }
+
+  // 6. Source: retain pointId and mergedPointIds
+  const source = primary.source ? { ...primary.source } : undefined
+  if (source) {
+    const allEvidenceReqIds = evidence.map((e) => e.reqId)
+    const secReqIds = secondary.source?.reqIds ?? []
+    source.reqIds = Array.from(new Set([...source.reqIds, ...secReqIds, ...allEvidenceReqIds]))
+    const secPointId = secondary.source?.pointId
+    if (secPointId && secPointId !== source.pointId) {
+      const mergedPointIds = new Set(source.mergedPointIds ?? [])
+      mergedPointIds.add(secPointId)
+      source.mergedPointIds = Array.from(mergedPointIds)
+    }
+  }
+
+  // 7. Title: if secondary has distinct input dimension, synthesize combined title
+  let title = primary.title
+  if (title.includes('账号登录') && secondary.title.includes('绑定手机号登录')) {
+    title = title.replace('账号登录', '账号或绑定手机号登录')
+  } else if (title.includes('已签发token立即失效') && secondary.title.includes('多个已签发token均失效')) {
+    title = secondary.title
+  } else if (secondary.title.length > title.length && secondary.title.includes(titleKey(primary))) {
+    title = secondary.title
+  }
+
+  return {
+    ...primary,
+    title,
+    precondition,
+    steps,
+    expected,
+    evidence,
+    assumptions,
+    source,
+    updatedAt: nowIso(),
+  }
+}
+
+/** 合并一组重复用例，保留主用例并删除冗余项 */
+export function mergeCaseGroup(
+  allCases: TestCase[],
+  groupCaseIds: string[]
+): { merged: TestCase; removedIds: string[] } | null {
+  const matching = allCases.filter((c) => groupCaseIds.includes(c.id))
+  if (matching.length < 2) return null
+
+  // Priority: manual > generated; P0 > P1 > P2; more evidence > fewer
+  const sorted = [...matching].sort((a, b) => {
+    if (a.origin !== b.origin) return a.origin === 'manual' ? -1 : 1
+    const prioOrder: Record<string, number> = { P0: 0, P1: 1, P2: 2 }
+    const pa = prioOrder[a.priority] ?? 1
+    const pb = prioOrder[b.priority] ?? 1
+    if (pa !== pb) return pa - pb
+    return b.evidence.length - a.evidence.length
+  })
+
+  let primary = sorted[0]
+  const removedIds: string[] = []
+
+  for (let i = 1; i < sorted.length; i++) {
+    primary = mergeTwoCases(primary, sorted[i])
+    removedIds.push(sorted[i].id)
+  }
+
+  return { merged: primary, removedIds }
+}
+
+/** 一键合并所有检测到的近似重复用例组 */
+export function mergeAllDuplicates(
+  allCases: TestCase[],
+  minScore = 0.8
+): { mergedCases: TestCase[]; removedIds: string[] } {
+  const dups = prescreenDuplicates(allCases).filter((d) => d.score >= minScore)
+  if (!dups.length) return { mergedCases: [], removedIds: [] }
+
+  const casesMap = new Map(allCases.map((c) => [c.id, structuredClone(c)]))
+  const removedSet = new Set<string>()
+  const mergedMap = new Map<string, TestCase>()
+
+  for (const dup of dups) {
+    const validIds = dup.caseIds.filter((id) => !removedSet.has(id))
+    if (validIds.length < 2) continue
+
+    const currentCases = validIds.map((id) => casesMap.get(id)!).filter(Boolean)
+    const result = mergeCaseGroup(currentCases, validIds)
+    if (!result) continue
+
+    casesMap.set(result.merged.id, result.merged)
+    mergedMap.set(result.merged.id, result.merged)
+    for (const rid of result.removedIds) {
+      removedSet.add(rid)
+      casesMap.delete(rid)
+      mergedMap.delete(rid)
+    }
+  }
+
+  return {
+    mergedCases: Array.from(mergedMap.values()),
+    removedIds: Array.from(removedSet),
+  }
 }

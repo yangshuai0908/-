@@ -1,11 +1,12 @@
+import type { AgentWorkspaceContext, AgentAction } from '@testpilot/shared'
+export type { AgentAction } from '@testpilot/shared'
+
+import type { AgentRole } from '@testpilot/shared'
+export type { AgentRole } from '@testpilot/shared'
+
 export interface AgentMessage {
   role: 'user' | 'assistant'
   content: string
-}
-
-export interface AgentAction {
-  tool: string
-  title: string
 }
 
 export interface AgentStreamEvent {
@@ -21,7 +22,13 @@ export interface AgentStreamEvent {
  * POST + SSE 流式 Agent 交互
  */
 export async function streamAgentChat(
-  payload: { projectId: string; requirementId: string | null; messages: AgentMessage[] },
+  payload: {
+    projectId: string
+    requirementId: string | null
+    role?: AgentRole
+    workspace?: AgentWorkspaceContext
+    messages: AgentMessage[]
+  },
   onEvent: (evt: AgentStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<{ message: string; actions: AgentAction[] }> {
@@ -41,6 +48,26 @@ export async function streamAgentChat(
   let buffer = ''
   let fullMessage = ''
   let finalActions: AgentAction[] = []
+  let finished = false
+
+  function consume(line: string) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) return
+    const json = trimmed.slice(5).trim()
+    if (!json) return
+    let evt: AgentStreamEvent
+    try { evt = JSON.parse(json) as AgentStreamEvent }
+    catch { throw new Error('Agent 返回了无法解析的执行事件') }
+    if (evt.type === 'delta') fullMessage += evt.delta || ''
+    if (evt.type === 'action' && evt.action) finalActions.push(evt.action)
+    if (evt.type === 'done') {
+      finished = true
+      if (evt.message !== undefined) fullMessage = evt.message
+      if (evt.actions) finalActions = evt.actions
+    }
+    onEvent(evt)
+    if (evt.type === 'error') throw new Error(evt.error || 'Agent 执行失败')
+  }
 
   try {
     while (true) {
@@ -51,27 +78,11 @@ export async function streamAgentChat(
       const lines = buffer.split('\n')
       buffer = lines.pop() ?? ''
 
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed || !trimmed.startsWith('data:')) continue
-        const jsonStr = trimmed.slice(5).trim()
-        if (!jsonStr) continue
-        try {
-          const evt = JSON.parse(jsonStr) as AgentStreamEvent
-          if (evt.type === 'delta' && evt.delta) {
-            fullMessage += evt.delta
-          } else if (evt.type === 'action' && evt.action) {
-            finalActions.push(evt.action)
-          } else if (evt.type === 'done') {
-            if (evt.message) fullMessage = evt.message
-            if (evt.actions) finalActions = evt.actions
-          }
-          onEvent(evt)
-        } catch {
-          // 忽略非完整 JSON 块
-        }
-      }
+      for (const line of lines) consume(line)
     }
+    buffer += decoder.decode()
+    if (buffer.trim()) consume(buffer)
+    if (!finished && !signal?.aborted) throw new Error('回复连接已中断，尚未收到完成结果；请核对已保存成果后再重试')
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
       return { message: fullMessage, actions: finalActions }

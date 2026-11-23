@@ -23,6 +23,7 @@ export function createReviewApi(request: <T>(url: string, init?: RequestInit) =>
     review: (payload: { requirementId: string; mode?: string }) =>
       request<ReviewReport>('/api/review', { method: 'POST', body: JSON.stringify(payload) }),
     getReview: (requirementId: string) => request<ReviewReport | null>(`/api/review/${requirementId}`),
+    getReviewReport: (requirementId: string, reportId: string) => request<ReviewReport>(`/api/review/${requirementId}/reports/${reportId}`),
 
     // ── 人工评审闭环 ──
     assessCase: (

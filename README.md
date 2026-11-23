@@ -34,15 +34,26 @@ npm run dev
 
 ## 工作区
 
-| 页签           | 做什么                                                                                                                                                     |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **需求**       | 粘贴文本 / 上传 .md .txt .docx / 载入示例。切块后可逐条查看 REQ 编号与章节路径，确认切得对不对再保存                                                       |
-| **用例**       | 按已确认测试点生成，SSE 推送进度，复核与保存完成后更新表格；表格内联改标题、优先级与人工结论，抽屉里编辑步骤、预期、证据和人工评审；证据徽标黄/红即代表依据存疑；一键导出 xlsx/csv |
-| **变更对比**   | 选两个需求版本，确定性 diff 找出增/删/改的条款，定位受影响的已有用例，模型给出「需新增 / 需调整 / 建议废弃」                                               |
-| **去重与评审** | 覆盖矩阵、重复组、遗漏清单、四项系统评分（覆盖率 / 场景完整性 / 步骤可执行性 / 预期可判定性），外加独立的人工评审面板                                      |
-| **Agent 助手** | 右下角悬浮打开。用自然语言要求 Agent 查看需求、检索用例、检查覆盖、生成用例、对比版本或评审；Agent 会自主选择工具并根据执行结果继续处理                    |
+工作区由左侧 Agent 对话和右侧成果视图组成。描述需要完成的分析或修改，Agent 调用业务工具；结果直接定位到需求、测试点、用例、评审或版本对比。页面可人工核对和编辑，不需要额外建立设计任务或执行六阶段看板。
 
-Agent 使用受限的工具循环，最多连续调用 6 次工具。生成只追加用例；删除和覆盖操作不开放。评审与版本对比会保存正式报告，和对应工作区页面共用同一业务逻辑。
+| 视图 | 用途 |
+| --- | --- |
+| 需求资料 | 导入、预览、保存需求版本，查看条款原文 |
+| 测试点 | 核对分析目标、原文引用和疑问，人工确认或排除生成范围 |
+| 测试用例 | 查看、修改、评审和导出实际保存的用例；正常生成交给 Agent，重新生成仍保留人工确认 |
+| 质量评审 | 展示 Agent 或页面运行产生的同一份正式评审与人工评审记录 |
+| 版本对比 | 查看实际保存的版本差异报告和调整建议 |
+| 分析结果 | 按需打开业务路径、状态流转、覆盖统计或风险建议；这些建议不自动成为需求或用例 |
+
+Agent 每轮最多连续调用六次工具。请求只传视图和对象 ID，服务端读取真实业务数据；工具返回变更集合及成果引用，由工作区统一刷新、跳转。切换项目或需求后旧执行结果不会改写新需求的视图。聊天记录保留成果引用，点击可重新打开对应内容；旧数据缺少引用时只显示原始记录。
+
+页面与 Agent 的用例新增、修改复用 `server/src/modules/cases/service.ts`。内容改动会统一核对原文与语义、重置过期人工评审并留存追溯；校验期间用例再次变化会拒绝覆盖。Agent 新增缺少标题、步骤、预期或原文依据会失败，不填充占位内容。生成仍使用人工确认测试点；Agent 提供范围建议，不代替人工确认。人工核对人目前是本地署名，尚无账号认证。
+
+验证：
+
+`node --import tsx --test server/src/scripts/agent-workspace.test.ts web/src/stores/workspace.test.ts web/src/modules/agent/api.test.ts`
+
+上述检查使用独立临时目录和固定模型样本，验证业务保存、上下文归属和结果同步，不证明真实模型的业务判断质量。测试重置必须显式指定预期目录；配置目录变化时拒绝写入。已停用的设计任务 JSON 保留在磁盘，不进行数据迁移或删除。
 
 ## 核心机制：怎么做到"不编造"
 
@@ -133,46 +144,52 @@ cd server && npx tsx src/scripts/selftest.ts
 
 ```
 Testpilot/
+├── shared/                              # 🌐 跨端共享契约 (@testpilot/shared)
+│   ├── src/
+│   │   ├── types.ts                     # 统一业务实体接口 (TestCase, TestPoint, Requirement 等)
+│   │   ├── domain.ts                    # 跨端纯领域规则 (isHumanConfirmed, calculateCostPoints)
+│   │   ├── agent.ts                     # Agent 工作区契约 (AgentAction, WorkspacePage)
+│   │   └── index.ts                     # 统一导出
+│   └── package.json
+│
 ├── server/src/
-│   ├── modules/                         # 🌟 业务模块中心
+│   ├── modules/                         # 🌟 服务端垂直切片业务模块
 │   │   ├── agent/                       # 【智能助手模块】
-│   │   │   ├── tools/                   # 🔌 插件化独立工具库（各工具彻底解耦）
-│   │   │   │   ├── index.ts             # 工具注册表（Registry）与调度入口
-│   │   │   │   ├── context.ts           # 共享工具上下文与辅助方法
-│   │   │   │   ├── overview.ts          # project_overview（项目概况）
-│   │   │   │   ├── requirement.ts       # read_requirement（读取需求）
-│   │   │   │   ├── searchCases.ts       # search_cases（检索用例）
-│   │   │   │   ├── coverage.ts          # check_coverage（覆盖率统计）
-│   │   │   │   ├── compare.ts           # compare_versions（版本对比）
-│   │   │   │   ├── generate.ts          # generate_cases（生成用例）
-│   │   │   │   └── review.ts            # review_cases（用例质量评审）
+│   │   │   ├── tools/                   # 插件化独立工具库 (overview, analysis, generate, pathways 等)
 │   │   │   ├── runner.ts                # ReAct 自主决策多轮循环与流式调度引擎
-│   │   │   ├── prompts.ts               # Agent 角色设定与 Tool 指引
-│   │   │   ├── types.ts                 # Agent 专属 Zod Schema 与 TypeScript 类型
-│   │   │   ├── routes.ts                # SSE HTTP 控制器路由
-│   │   │   └── index.ts                 # 模块统一对外出口
+│   │   │   ├── prompts.ts               # 角色设定与 Tool 指引
+│   │   │   ├── workspace.ts             # 工作区上下文提取
+│   │   │   └── routes.ts                # SSE 交互路由
 │   │   ├── requirements/                # 【需求管理模块】
-│   │   │   ├── routes.ts                # 项目创建、需求导入、文档解析预览路由
-│   │   │   └── index.ts
+│   │   │   ├── routes.ts                # 项目与需求 CRUD、导入预览
+│   │   │   └── analysis.ts              # 需求切块理解与测试点分批分析
 │   │   ├── cases/                       # 【用例设计模块】
-│   │   │   └── index.ts                 # 用例增删改查、批量生成与 Excel 导出
-│   │   └── review/                      # 【质量评审与版本对比模块】
-│   │       └── index.ts                 # 覆盖率计算、人工闭环与版本差异比对
-│   ├── core/ / llm/ / store/ / docs/    # 底层通用基础设施（模型通信、文件存储、分块算法）
-│   └── index.ts                         # 服务端主入口（按模块整洁挂载路由）
+│   │   │   ├── casesRouter.ts           # 用例查询与基础增删
+│   │   │   ├── generateRouter.ts        # 场景生成路由
+│   │   │   ├── exportRouter.ts          # Excel / CSV 格式化导出
+│   │   │   ├── service.ts               # 用例领域操作 (校验、原文核验、追溯记录)
+│   │   │   └── generation.ts            # 已确认测试点批量生成引擎
+│   │   └── review/                      # 【质量评审与对比模块】
+│   │       ├── reviewRouter.ts          # 评审综合报告路由
+│   │       ├── compareRouter.ts         # 跨版本差异比对与影响面建议
+│   │       ├── assessmentRouter.ts      # 人工闭环评审记录与汇总
+│   │       ├── coverage.ts              # 条款覆盖度计算
+│   │       ├── dedupe.ts                # 语义去重聚类
+│   │       └── assessment.ts            # 评审结果计分
+│   ├── core/ / llm/ / store/ / docs/    # 通用基础设施 (模型调用、fsRepo、分块算法)
+│   └── index.ts                         # 服务端主入口 (纯挂载模块路由)
 │
 └── web/src/
-    ├── modules/                         # 🌟 前端业务模块中心
-    │   ├── requirements/                # 需求域模块
-    │   │   └── api.ts                   # 需求相关接口
-    │   ├── cases/                       # 用例域模块
-    │   │   └── api.ts                   # 用例设计相关接口
-    │   ├── review/                      # 评审与对比域模块
-    │   │   └── api.ts                   # 评审与对比相关接口
-    │   └── agent/                       # 助手域模块
-    │       └── api.ts                   # Agent SSE 实时交互接口
-    ├── api/client.ts                    # 汇聚各领域 API，保持向下无缝兼容
-    └── views/                           # 页面视图层
+    ├── modules/                         # 🌟 前端领域 API 模块 (requirements, cases, review, agent)
+    ├── stores/                          # 工作区全局状态管理 (workspace.ts)
+    ├── components/                      # 公共展示组件 (AppShell, EvidenceBadge, PathwayViewer 等)
+    │   └── analysis/                    # 需求分析解耦子组件 (StartBar, PointCard, EditDrawer 等)
+    ├── views/                           # 页面视图层
+    │   ├── cases/                       # 用例视图组件群 (FilterBar, DataTable, EditDrawer, useCases)
+    │   ├── review/                      # 评审视图组件群 (ReviewSummary, PendingList, GapClauseList)
+    │   ├── RequirementView.vue          # 需求总视图
+    │   └── AgentView.vue                # 助手对话视图
+    └── api/client.ts                    # 汇聚各模块 API
 ```
 
 数据落在 `data/*.json`（已 gitignore），删掉即重置。
@@ -201,11 +218,10 @@ Testpilot/
 
 追溯从功能上线后开始，旧操作无法追补。记录是本地 JSON 操作历史，随需求/项目删除一起清理；不是防篡改审计，也不证明操作者身份。语义复核仍可能误判，步骤执行成功不能等同于业务结论正确。
 
-验证：
+## 验证：
 
 ```bash
-npx tsx --test server/src/scripts/generation-trace.test.ts
-npx tsx --test server/src/scripts/analysis.test.ts
-npm run typecheck
-npm run build
+npm test          # 运行全量 48 项单元测试与集成测试
+npm run typecheck # 前后端全量静态类型检查
+npm run build     # 前端生产打包构建
 ```

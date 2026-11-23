@@ -6,7 +6,7 @@ import {
   type RevisionCost,
   type TestCase,
   type Verdict,
-} from '../store/schema.js'
+} from '../../store/schema.js'
 import { isNonTestableChunk } from './coverage.js'
 
 export const VERDICTS: Verdict[] = ['unreviewed', 'effective', 'needs_revision', 'invalid']

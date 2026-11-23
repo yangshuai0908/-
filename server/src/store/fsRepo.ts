@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
 
-export type Collection = 'projects' | 'requirements' | 'cases' | 'compares' | 'reviews' | 'gapReviews' | 'traces'
+export type Collection = 'projects' | 'requirements' | 'cases' | 'compares' | 'reviews' | 'gapReviews' | 'traces' | 'designTasks'
 
 const cache = new Map<Collection, unknown[]>()
 
@@ -103,8 +103,11 @@ export function removeWhere<T extends { id: string }>(col: Collection, pred: (it
 }
 
 /** 清空全部集合（仅测试/重置用） */
-export function resetAll(): void {
-  for (const col of ['projects', 'requirements', 'cases', 'compares', 'reviews', 'gapReviews', 'traces'] as Collection[]) {
+export function resetAll(expectedDataDir: string): void {
+  if (typeof expectedDataDir !== 'string' || path.resolve(config.dataDir) !== path.resolve(expectedDataDir)) {
+    throw new Error('拒绝重置：当前数据目录与指定的测试目录不一致')
+  }
+  for (const col of ['projects', 'requirements', 'cases', 'compares', 'reviews', 'gapReviews', 'traces', 'designTasks'] as Collection[]) {
     cache.set(col, [])
     save(col)
   }

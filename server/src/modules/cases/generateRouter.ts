@@ -1,9 +1,9 @@
 import { Router } from 'express'
-import { generationPlan, generateConfirmedCases } from '../modules/cases/generation.js'
-import * as repo from '../store/fsRepo.js'
-import type { RequirementVersion } from '../store/schema.js'
-import { AppError, CATEGORIES, type Category } from '../utils.js'
-export { buildCase } from '../modules/cases/buildCase.js'
+import { generationPlan, generateConfirmedCases } from './generation.js'
+import * as repo from '../../store/fsRepo.js'
+import type { RequirementVersion } from '../../store/schema.js'
+import { AppError, CATEGORIES, type Category } from '../../utils.js'
+export { buildCase } from './buildCase.js'
 
 export const generateRouter = Router()
 

@@ -1,16 +1,16 @@
 import { Router } from 'express'
-import { chatJson } from '../llm/json.js'
-import { buildReviewMessages } from '../prompts/review.js'
-import { buildCoverage, categoryStats, scoreCompleteness } from '../review/coverage.js'
-import { prescreenDuplicates } from '../review/dedupe.js'
-import * as repo from '../store/fsRepo.js'
+import { chatJson } from '../../llm/json.js'
+import { buildReviewMessages } from '../../prompts/review.js'
+import { buildCoverage, categoryStats, scoreCompleteness } from './coverage.js'
+import { prescreenDuplicates } from './dedupe.js'
+import * as repo from '../../store/fsRepo.js'
 import {
   LlmReviewResultSchema,
   type RequirementVersion,
   type ReviewReport,
   type TestCase,
-} from '../store/schema.js'
-import { AppError, genId, nowIso } from '../utils.js'
+} from '../../store/schema.js'
+import { AppError, genId, nowIso } from '../../utils.js'
 
 export const reviewRouter = Router()
 
@@ -109,4 +109,10 @@ reviewRouter.get('/review/:rid', (req, res) => {
     .all<ReviewReport>('reviews')
     .find((r) => r.requirementId === String(req.params.rid))
   res.json(report ?? null)
+})
+
+reviewRouter.get('/review/:rid/reports/:reportId', (req, res) => {
+  const report = repo.all<ReviewReport>('reviews').find(item => item.id === String(req.params.reportId) && item.requirementId === String(req.params.rid))
+  if (!report) throw new AppError('原评审报告已不可用，请查看当前需求的最新评审', 404)
+  res.json(report)
 })

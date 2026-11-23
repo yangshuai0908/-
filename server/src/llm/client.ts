@@ -29,12 +29,29 @@ interface CompletionResult {
   finishReason: string
 }
 
+/** 已确认支持 thinking 参数的官方接口，统一用于普通与流式请求。 */
+function thinkingParams() {
+  const hostname = new URL(config.baseUrl).hostname
+  return hostname === 'api.deepseek.com' || hostname === 'bigmodel.cn' || hostname.endsWith('.bigmodel.cn')
+    ? { thinking: { type: config.thinking } }
+    : {}
+}
+
+function completedContent(content: unknown, finishReason: string, maxTokens: number): string {
+  if (finishReason === 'length' || finishReason === 'max_tokens') {
+    throw new AppError(`模型输出被截断（finish_reason=${finishReason}，max_tokens=${maxTokens}）。该次输出未作为完整结果使用，请减少单批内容或提高输出上限。`, 502)
+  }
+  if (typeof content !== 'string' || !content.trim()) {
+    throw new AppError(`模型返回内容为空（finish_reason=${finishReason}）`, 502)
+  }
+  return content
+}
+
 /**
  * 调用 OpenAI 兼容的 /chat/completions（非流式，结构化输出不需要 token 流）
  *
  * 两个兼容性处理：
- * - 部分模型（如 glm-4.5-air）默认开思考模式，思考内容会占用 max_tokens 并拖慢响应，
- *   这里按配置显式传 thinking=disabled
+ * - DeepSeek 与智谱官方接口均按配置显式传入 thinking，避免默认思考耗尽输出额度
  * - 显式设置 max_tokens，避免把输出长度交给服务端默认值导致长需求被截断
  */
 async function requestOnce(opts: ChatOptions): Promise<CompletionResult> {
@@ -54,7 +71,7 @@ async function requestOnce(opts: ChatOptions): Promise<CompletionResult> {
         temperature: opts.temperature ?? config.temperature,
         max_tokens: opts.maxTokens ?? config.maxTokens,
         ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),
-        ...(config.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {}),
+        ...thinkingParams(),
       }),
       signal: controller.signal,
     })
@@ -73,12 +90,8 @@ async function requestOnce(opts: ChatOptions): Promise<CompletionResult> {
       choices?: { message?: { content?: unknown }; finish_reason?: string }[]
     }
     const choice = data.choices?.[0]
-    const content = choice?.message?.content
     const finishReason = choice?.finish_reason ?? 'stop'
-
-    if (typeof content !== 'string' || !content.trim()) {
-      throw new AppError(`模型返回内容为空（finish_reason=${finishReason}）`, 502)
-    }
+    const content = completedContent(choice?.message?.content, finishReason, opts.maxTokens ?? config.maxTokens)
 
     return { content, finishReason }
   } catch (e) {
@@ -103,13 +116,6 @@ export async function chat(opts: ChatOptions): Promise<string> {
         model: config.model, temperature: opts.temperature ?? config.temperature,
         maxTokens: opts.maxTokens ?? config.maxTokens, jsonMode: opts.jsonMode ?? false, thinking: config.thinking,
       }, () => requestOnce(opts))
-
-      if (result.finishReason === 'length' || result.finishReason === 'max_tokens') {
-        throw new AppError(
-          `模型输出被截断（已达到 max_tokens=${opts.maxTokens ?? config.maxTokens}）。可减少单批条款数量，或调大 .env 里的 LLM_MAX_TOKENS`,
-          502,
-        )
-      }
 
       return result.content
     } catch (e) {
@@ -147,7 +153,8 @@ export async function streamChat(
         temperature: opts.temperature ?? config.temperature,
         max_tokens: opts.maxTokens ?? config.maxTokens,
         stream: true,
-        ...(config.thinking === 'disabled' ? { thinking: { type: 'disabled' } } : {}),
+        ...(opts.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        ...thinkingParams(),
       }),
       signal: controller.signal,
     })
@@ -165,6 +172,26 @@ export async function streamChat(
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
     let fullContent = ''
+    let finishReason: string | null = null
+    let streamEnded = false
+
+    function consume(line: string) {
+      const trimmed = line.trim()
+      if (!trimmed.startsWith('data:')) return
+      const jsonStr = trimmed.slice(5).trim()
+      if (jsonStr === '[DONE]') { streamEnded = true; return }
+      if (!jsonStr) return
+      let data: { choices?: { delta?: { content?: unknown }; finish_reason?: string | null }[] }
+      try { data = JSON.parse(jsonStr) }
+      catch { throw new AppError('模型流式响应包含无法解析的数据，未获得完整结果', 502) }
+      const choice = data.choices?.[0]
+      if (choice?.finish_reason) finishReason = choice.finish_reason
+      const delta = choice?.delta?.content
+      if (typeof delta === 'string' && delta) {
+        fullContent += delta
+        onDelta(delta)
+      }
+    }
 
     while (true) {
       const { done, value } = await reader.read()
@@ -174,33 +201,12 @@ export async function streamChat(
       const lines = buffer.split('\n')
       buffer = lines.pop() ?? ''
 
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed || trimmed.startsWith(':')) continue
-        if (trimmed === 'data: [DONE]') continue
-        if (trimmed.startsWith('data:')) {
-          const jsonStr = trimmed.slice(5).trim()
-          try {
-            const data = JSON.parse(jsonStr) as {
-              choices?: { delta?: { content?: string } }[]
-            }
-            const delta = data.choices?.[0]?.delta?.content
-            if (delta) {
-              fullContent += delta
-              onDelta(delta)
-            }
-          } catch {
-            // 忽略未闭合或心跳块
-          }
-        }
-      }
+      for (const line of lines) consume(line)
     }
-
-    if (!fullContent.trim()) {
-      throw new AppError('模型返回内容为空', 502)
-    }
-
-    return fullContent
+    buffer += decoder.decode()
+    if (buffer.trim()) consume(buffer)
+    if (!finishReason && !streamEnded) throw new AppError('模型流式响应提前中断，未收到结束标记', 502)
+    return completedContent(fullContent, finishReason ?? 'stop', opts.maxTokens ?? config.maxTokens)
   } catch (e) {
     if ((e as Error).name === 'AbortError') {
       throw new AppError('模型调用超时（180 秒）', 504)

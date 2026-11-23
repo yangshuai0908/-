@@ -5,7 +5,7 @@ import { config } from '../config.js'
 import type { RequirementVersion, TestCase } from '../store/schema.js'
 import { assessCases } from '../validate/caseSupport.js'
 import { overallState } from '../validate/evidence.js'
-import { prescreenDuplicates } from '../review/dedupe.js'
+import { prescreenDuplicates } from '../modules/review/index.js'
 
 const requirements = JSON.parse(fs.readFileSync(path.join(config.dataDir, 'requirements.json'), 'utf8')) as RequirementVersion[]
 const cases = JSON.parse(fs.readFileSync(path.join(config.dataDir, 'cases.json'), 'utf8')) as TestCase[]

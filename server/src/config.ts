@@ -46,7 +46,7 @@ export const config = {
   maxTokens: num(process.env.LLM_MAX_TOKENS, 4096),
   /**
    * 思考模式开关。
-   * glm-4.5-air 这类模型默认开思考，思考内容会占用 token 并显著拖慢响应，
+   * DeepSeek Flash、glm-4.5-air 等模型默认开思考，会占用输出额度并显著拖慢响应，
    * 而"根据条款设计用例"不需要长链推理，所以默认关掉。
    */
   thinking: ((process.env.LLM_THINKING ?? 'disabled').toLowerCase() === 'enabled'

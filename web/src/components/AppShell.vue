@@ -1,783 +1,329 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from "vue";
-import {
-  NButton,
-  NInput,
-  NModal,
-  NSelect,
-  NSpin,
-  NTabPane,
-  NTabs,
-  type SelectRenderOption,
-  useDialog,
-  useMessage,
-} from "naive-ui";
-import { api } from "../api/client";
-import {
-  currentProject,
-  currentProjectId,
-  currentRequirementId,
-  projects,
-  requirements,
-} from "../stores/workspace";
-import type { HealthInfo } from "../types";
-import RequirementView from "../views/RequirementView.vue";
-import CasesView from "../views/CasesView.vue";
-import CompareView from "../views/CompareView.vue";
-import ReviewView from "../views/ReviewView.vue";
-import AgentView from "../views/AgentView.vue";
+import { computed, onMounted, ref, watch } from 'vue'
+import { NButton, NInput, NModal, NSelect, NSpin, NTabPane, NTabs, useDialog, useMessage } from 'naive-ui'
+import { api } from '../api/client'
+import { activeTab, canvasFocus, currentProjectId, currentRequirement, currentRequirementId, projects, requirements, requirementsRevision, selectedAgentResult } from '../stores/workspace'
+import type { HealthInfo } from '../types'
+import AgentView from '../views/AgentView.vue'
+import RequirementView from '../views/RequirementView.vue'
+import RequirementAnalysisPanel from './RequirementAnalysisPanel.vue'
+import CasesView from '../views/CasesView.vue'
+import CompareView from '../views/CompareView.vue'
+import ReviewView from '../views/ReviewView.vue'
+import AgentResult from './AgentResult.vue'
+import AppWorkflowStepper from './AppWorkflowStepper.vue'
 
-const message = useMessage();
-const dialog = useDialog();
-const tab = ref("requirement");
-const loading = ref(true);
-const showAgent = ref(localStorage.getItem("tp_agent_open") === "true");
-watch(showAgent, (val) => {
-  try {
-    localStorage.setItem("tp_agent_open", String(val));
-  } catch (e) {
-    // ignore
-  }
-});
-const health = ref<HealthInfo | null>(null);
-const navigation = [
-  { key: "requirement", label: "需求管理", index: "01" },
-  { key: "cases", label: "测试用例", index: "02" },
-  { key: "compare", label: "版本对比", index: "03" },
-  { key: "review", label: "质量评审", index: "04" },
-];
-const activeSection = computed(
-  () => navigation.find((item) => item.key === tab.value)?.label ?? "",
-);
-
-const showCreate = ref(false);
-const newProjectName = ref("");
-const creating = ref(false);
-const projectOptions = ref<{ label: string; value: string }[]>([]);
-const requirementOptions = ref<{ label: string; value: string }[]>([]);
-
-function syncProjectOptions() {
-  projectOptions.value = projects.value.map((p) => ({
-    label: p.name,
-    value: p.id,
-  }));
-}
-
-function syncRequirementOptions() {
-  requirementOptions.value = requirements.value.map((r) => ({
-    label: `${r.label} · ${r.chunks.length} 条条款`,
-    value: r.id,
-  }));
-}
-
-async function loadProjects() {
-  projects.value = await api.listProjects();
-  syncProjectOptions();
-  if (!currentProjectId.value && projects.value.length)
-    currentProjectId.value = projects.value[0].id;
-}
-
+const message = useMessage(), dialog = useDialog()
+const loading = ref(true), creating = ref(false), showCreate = ref(false), projectName = ref('')
+const health = ref<HealthInfo | null>(null)
+const projectOptions = computed(() => projects.value.map(item => ({ label: item.name, value: item.id })))
+const requirementOptions = computed(() => requirements.value.map(item => ({ label: item.label, value: item.id })))
+let requirementRequest = 0
 async function loadRequirements() {
-  if (!currentProjectId.value) {
-    requirements.value = [];
-    syncRequirementOptions();
-    return;
-  }
-  requirements.value = await api.listRequirements(currentProjectId.value);
-  syncRequirementOptions();
-  if (!requirements.value.some((r) => r.id === currentRequirementId.value)) {
-    currentRequirementId.value = requirements.value[0]?.id ?? null;
-  }
+  const projectId = currentProjectId.value, request = ++requirementRequest
+  if (!projectId) { requirements.value = []; currentRequirementId.value = null; return }
+  try {
+    const list = await api.listRequirements(projectId)
+    if (request !== requirementRequest || currentProjectId.value !== projectId) return
+    requirements.value = list
+    if (!list.some(item => item.id === currentRequirementId.value)) currentRequirementId.value = list[0]?.id || null
+  } catch (e) { if (request === requirementRequest) message.error((e as Error).message) }
 }
-
 async function createProject() {
-  const name = newProjectName.value.trim();
-  if (!name) {
-    message.warning("请填写项目名称");
-    return;
-  }
-  creating.value = true;
+  if (!projectName.value.trim() || creating.value) return
+  creating.value = true
   try {
-    const p = await api.createProject(name);
-    showCreate.value = false;
-    newProjectName.value = "";
-    await loadProjects();
-    currentProjectId.value = p.id;
-    message.success("项目已创建");
-  } catch (e) {
-    message.error((e as Error).message);
-  } finally {
-    creating.value = false;
-  }
+    const item = await api.createProject(projectName.value.trim())
+    projects.value = [...projects.value, item]; currentProjectId.value = item.id
+    showCreate.value = false; projectName.value = ''
+  } catch (e) { message.error((e as Error).message) }
+  finally { creating.value = false }
 }
-
-function deleteProject(projectId: string) {
-  const selected = projects.value.find((p) => p.id === projectId);
-  if (!selected) return;
-  dialog.warning({
-    title: "删除项目",
-    content: `确认删除「${selected.name}」？该项目的需求版本、测试用例和报告会一并删除。`,
-    positiveText: "删除项目",
-    negativeText: "取消",
-    onPositiveClick: async () => {
-      try {
-        await api.deleteProject(selected.id);
-        projects.value = projects.value.filter((p) => p.id !== selected.id);
-        syncProjectOptions();
-        if (currentProjectId.value === selected.id)
-          currentProjectId.value = projects.value[0]?.id ?? null;
-        if (!projects.value.length) showCreate.value = true;
-        message.success("项目已删除");
-      } catch (e) {
-        message.error((e as Error).message);
-      }
-    },
-  });
+function deleteProject() {
+  const item = projects.value.find(item => item.id === currentProjectId.value)
+  if (!item) return
+  dialog.warning({ title: '删除项目', content: `确认删除「${item.name}」及其需求、用例和报告？`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => {
+    try { await api.deleteProject(item.id); projects.value = projects.value.filter(project => project.id !== item.id); currentProjectId.value = projects.value[0]?.id || null }
+    catch (e) { message.error((e as Error).message) }
+  } })
 }
-
-const renderProjectOption: SelectRenderOption = ({ node, option }) =>
-  h("div", { class: "project-option" }, [
-    node,
-    h(
-      "button",
-      {
-        class: "project-option-delete",
-        type: "button",
-        title: `删除「${String(option.label ?? "项目")}」`,
-        "aria-label": `删除「${String(option.label ?? "项目")}」`,
-        onMousedown: (event: MouseEvent) => {
-          event.preventDefault();
-          event.stopPropagation();
-        },
-        onClick: (event: MouseEvent) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (option.value !== undefined) deleteProject(String(option.value));
-        },
-      },
-      "×",
-    ),
-  ]);
-
-watch(currentProjectId, async () => {
-  currentRequirementId.value = null;
-  await loadRequirements();
-});
-
+watch(currentProjectId, () => { currentRequirementId.value = null; void loadRequirements() })
+watch(requirementsRevision, loadRequirements)
 onMounted(async () => {
-  try {
-    health.value = await api.health();
-    if (!health.value.llm.ready) message.warning(health.value.llm.reason);
-  } catch {
-    message.error("后端未启动，请检查 server 是否在 3001 端口运行");
-  }
-  try {
-    await loadProjects();
-    await loadRequirements();
-    if (!projects.value.length) showCreate.value = true;
-  } catch (e) {
-    message.error((e as Error).message);
-  } finally {
-    loading.value = false;
-  }
-});
-
-function refreshRequirements() {
-  return loadRequirements();
-}
-defineExpose({ refreshRequirements });
+  const results = await Promise.allSettled([api.health(), api.listProjects()])
+  if (results[0].status === 'fulfilled') health.value = results[0].value
+  else message.error('后端连接失败，请检查服务状态')
+  if (results[1].status === 'fulfilled') {
+    projects.value = results[1].value
+    if (!projects.value.some(item => item.id === currentProjectId.value)) currentProjectId.value = projects.value[0]?.id || null
+    else await loadRequirements()
+  } else message.error(results[1].reason instanceof Error ? results[1].reason.message : '读取项目失败')
+  loading.value = false
+})
 </script>
 
 <template>
   <div class="shell">
-    <aside class="sidebar">
+    <header class="app-header">
       <div class="brand">
-        <span class="logo">TP</span>
-        <div>
-          <div class="title">TestPilot</div>
-          <div class="subtitle">测试管理工作台</div>
+        <span class="brand-badge">TP</span>
+        <div class="brand-text">
+          <div class="brand-title">TestPilot <span class="brand-tag">Copilot</span></div>
+          <small class="brand-sub">需求驱动的可追溯测试工程平台</small>
         </div>
       </div>
-
-      <div class="project-control">
-        <n-select
-          v-model:value="currentProjectId"
-          :options="projectOptions"
-          :render-option="renderProjectOption"
-          placeholder="选择项目"
-          size="medium"
-        />
-        <n-button
-          size="small"
-          secondary
-          class="new-project"
-          @click="showCreate = true"
-          >＋ 新建项目</n-button
-        >
+      <div class="project-context">
+        <n-select v-model:value="currentProjectId" :options="projectOptions" placeholder="选择项目" size="small" />
+        <n-select v-model:value="currentRequirementId" :options="requirementOptions" placeholder="选择需求版本" size="small" clearable />
+        <n-button size="small" secondary @click="showCreate = true">+ 新建项目</n-button>
+        <n-button v-if="currentProjectId" size="small" quaternary @click="deleteProject">删除项目</n-button>
       </div>
+      <div class="header-status">
+        <div class="model-status" :class="{ ready: health?.llm.ready }">
+          <span class="status-beacon" />
+          <span class="model-name">{{ health?.llm.ready ? health.model : '模型未就绪' }}</span>
+        </div>
+      </div>
+    </header>
 
-      <div class="nav-label">工作区</div>
-      <nav class="side-nav" aria-label="工作区模块">
-        <button
-          v-for="item in navigation"
-          :key="item.key"
-          type="button"
-          :class="{ active: tab === item.key }"
-          @click="tab = item.key"
-        >
-          <span class="nav-index">{{ item.index }}</span>
-          <span>{{ item.label }}</span>
-        </button>
-      </nav>
+    <div v-if="loading" class="loading"><n-spin size="large" /></div>
+    <div v-else class="workspace">
+      <aside class="agent-panel"><AgentView /></aside>
+      <section class="results" aria-label="需求与测试成果">
+        <!-- 业务生命周期流水线 -->
+        <AppWorkflowStepper />
 
-      <div class="sidebar-foot">
-        <span
-          class="status-dot"
-          :class="health?.llm.ready ? 'ready' : 'offline'"
-        />
-        <div>
-          <div class="status-title">
-            {{ health?.llm.ready ? "服务已连接" : "服务状态" }}
+        <div class="results-heading">
+          <div class="heading-left">
+            <strong>{{ currentRequirement?.label || '未选择需求版本' }}</strong>
+            <span class="heading-desc">{{ currentRequirement ? '当前版本工作成果' : '请先在上方或需求资料中导入需求' }}</span>
           </div>
-          <div class="status-subtitle">
-            {{ health?.llm.ready ? health.model : "请配置模型" }}
+          <div v-if="canvasFocus" class="focus-pill">
+            <span class="focus-type-tag">聚焦</span>
+            <span class="focus-title">{{ canvasFocus.title }}</span>
           </div>
         </div>
-      </div>
-    </aside>
 
-    <section class="workspace">
-      <header class="topbar">
-        <div class="page-context">
-          <span class="context-label">{{ activeSection }}</span>
-          <span class="context-project">{{
-            currentProject?.name || "请选择项目"
-          }}</span>
-        </div>
-        <div class="controls">
-          <n-select
-            v-model:value="currentRequirementId"
-            :options="requirementOptions"
-            placeholder="选择需求版本"
-            size="small"
-            clearable
-            style="width: 230px"
-          />
-        </div>
-      </header>
-
-      <main class="content">
-        <n-spin v-if="loading" style="display: block; margin-top: 80px" />
-        <n-tabs
-          v-else
-          v-model:value="tab"
-          class="workspace-tabs"
-          type="line"
-          animated
-          pane-style="padding: 0"
-        >
-          <n-tab-pane name="requirement"
-            ><RequirementView @refresh="loadRequirements"
-          /></n-tab-pane>
-          <n-tab-pane name="cases"><CasesView /></n-tab-pane>
-          <n-tab-pane name="compare"><CompareView /></n-tab-pane>
-          <n-tab-pane name="review"><ReviewView /></n-tab-pane>
+        <n-tabs v-model:value="activeTab" type="line" class="result-tabs" pane-style="padding: 0">
+          <n-tab-pane name="requirement" tab="需求资料" display-directive="show:lazy" class="pane-requirement"><RequirementView @refresh="loadRequirements" /></n-tab-pane>
+          <n-tab-pane name="points" tab="测试点" display-directive="show:lazy"><RequirementAnalysisPanel v-if="currentRequirement" :key="currentRequirement.id" :requirement="currentRequirement" /><div v-else class="empty">先在需求资料中保存或选择需求版本</div></n-tab-pane>
+          <n-tab-pane name="cases" tab="测试用例" display-directive="show:lazy"><CasesView /></n-tab-pane>
+          <n-tab-pane name="review" tab="质量评审" display-directive="show:lazy"><ReviewView /></n-tab-pane>
+          <n-tab-pane name="compare" tab="版本对比" display-directive="show:lazy"><CompareView /></n-tab-pane>
+          <n-tab-pane v-if="selectedAgentResult?.artifact?.view === 'insights'" name="insights" tab="分析结果" display-directive="show:lazy"><AgentResult :action="selectedAgentResult" /></n-tab-pane>
         </n-tabs>
-      </main>
-    </section>
-
-    <div class="agent-float">
-      <transition name="popover-zoom">
-        <section
-          v-show="showAgent"
-          class="agent-popover"
-          aria-label="TestPilot Agent 对话面板"
-        >
-          <header class="agent-popover-head">
-            <span><b>TP</b> TestPilot Agent</span>
-            <button
-              type="button"
-              class="popover-close-btn"
-              aria-label="收起 Agent"
-              title="收起助手面板"
-              @click="showAgent = false"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="15"
-                height="15"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.2"
-                stroke-linecap="round"
-              >
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </header>
-          <AgentView compact />
-        </section>
-      </transition>
-
-      <!-- 展开时完全隐藏此按钮；仅在收起时显示 -->
-      <transition name="trigger-fade">
-        <button
-          v-show="!showAgent"
-          class="agent-trigger"
-          type="button"
-          aria-expanded="false"
-          title="打开 TestPilot Agent 助手"
-          @click="showAgent = true"
-        >
-          <span class="trigger-mark">TP</span>
-        </button>
-      </transition>
+      </section>
     </div>
-
-    <n-modal
-      v-model:show="showCreate"
-      preset="card"
-      title="新建项目"
-      style="width: 420px"
-      :bordered="false"
-    >
-      <n-input
-        v-model:value="newProjectName"
-        placeholder="例如：用户登录模块"
-        @keyup.enter="createProject"
-      />
-      <template #footer>
-        <div style="display: flex; justify-content: flex-end; gap: 8px">
-          <n-button size="small" @click="showCreate = false">取消</n-button>
-          <n-button
-            size="small"
-            type="primary"
-            :loading="creating"
-            @click="createProject"
-            >创建</n-button
-          >
-        </div>
-      </template>
-    </n-modal>
+    <n-modal v-model:show="showCreate" preset="card" title="新建项目" style="width:420px" :bordered="false"><n-input v-model:value="projectName" placeholder="项目名称" @keyup.enter="createProject" /><template #footer><div class="modal-actions"><n-button @click="showCreate = false">取消</n-button><n-button type="primary" :loading="creating" @click="createProject">创建</n-button></div></template></n-modal>
   </div>
 </template>
 
 <style scoped>
 .shell {
   height: 100%;
-  display: flex;
-  background: var(--tp-bg);
-}
-.sidebar {
-  width: 228px;
-  flex: 0 0 228px;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  padding: 24px 16px 14px;
-  background: #f8f9fb;
-  border-right: 1px solid var(--tp-border);
+  overflow: hidden;
+  background: #f4f6f9;
 }
-.brand {
+.app-header {
+  height: 58px;
   display: flex;
   align-items: center;
-  gap: 11px;
-  padding: 0 7px 26px;
+  gap: 24px;
+  padding: 0 24px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
 }
-.logo {
-  width: 34px;
-  height: 34px;
+.brand { display: flex; align-items: center; gap: 12px; min-width: 220px; }
+.brand-badge {
   display: grid;
   place-items: center;
-  border-radius: 7px;
-  background: #243b53;
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
   color: white;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  box-shadow: 0 2px 4px rgba(37,99,235,0.25);
 }
-.title {
+.brand-title {
   font-size: 15px;
   font-weight: 700;
-  letter-spacing: -0.02em;
-}
-.subtitle {
-  font-size: 11px;
-  color: var(--tp-text-dim);
-  margin-top: 3px;
-}
-.project-control {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 0 2px 24px;
-}
-.new-project {
-  width: 100%;
-}
-:global(.project-option) {
-  position: relative;
-}
-:global(.project-option .n-base-select-option) {
-  padding-right: 58px;
-}
-:global(.project-option-delete) {
-  position: absolute;
-  top: 50%;
-  right: 26px;
-  transform: translateY(-50%);
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: #9aa4af;
-  font-size: 17px;
-  line-height: 1;
-  cursor: pointer;
-}
-:global(.project-option-delete:hover) {
-  background: #fcebec;
-  color: #b85858;
-}
-.nav-label {
-  padding: 0 9px 8px;
-  color: #8c96a3;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-}
-.side-nav {
-  display: grid;
-  gap: 3px;
-}
-.side-nav button {
+  color: #0f172a;
   display: flex;
   align-items: center;
-  gap: 11px;
-  width: 100%;
-  border: 0;
-  border-radius: 5px;
-  padding: 10px 9px;
-  background: transparent;
-  color: #596574;
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
+  gap: 6px;
+  line-height: 1.2;
 }
-.side-nav button:hover {
-  background: #edf1f5;
-  color: #25374a;
-}
-.side-nav button.active {
-  background: #e8eef4;
-  color: #243b53;
+.brand-tag {
+  font-size: 10px;
+  padding: 1px 5px;
+  background: #f1f5f9;
+  color: #475569;
+  border-radius: 4px;
   font-weight: 600;
 }
-.nav-index {
-  width: 22px;
-  color: #9aa4af;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-.side-nav button.active .nav-index {
-  color: #526b83;
-}
-.sidebar-foot {
+.brand-sub { color: #94a3b8; font-size: 11px; margin-top: 2px; display: block; }
+
+.project-context { display: flex; align-items: center; gap: 8px; flex: 1; }
+.project-context :deep(.n-select) { width: 185px; }
+
+.header-status { display: flex; align-items: center; gap: 12px; }
+.model-status {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: auto;
-  padding: 13px 9px 5px;
-  border-top: 1px solid var(--tp-border);
+  gap: 7px;
+  padding: 4px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  font-size: 11px;
+  color: #64748b;
 }
-.status-dot {
+.model-status.ready {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #166534;
+}
+.status-beacon {
   width: 7px;
   height: 7px;
-  flex: 0 0 7px;
   border-radius: 50%;
-  background: #c1c8d0;
+  background: #f59e0b;
 }
-.status-dot.ready {
-  background: #4d9a73;
+.model-status.ready .status-beacon {
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+  animation: pulseBeacon 2s infinite ease-in-out;
 }
-.status-dot.offline {
-  background: #c27b59;
+@keyframes pulseBeacon {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
 }
-.status-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: #475363;
-}
-.status-subtitle {
-  max-width: 165px;
-  overflow: hidden;
-  color: #8b95a1;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 2px;
-}
+.model-name { font-weight: 500; font-family: ui-monospace, SFMono-Regular, monospace; }
+
 .workspace {
-  flex: 1;
-  min-width: 0;
   display: flex;
-  flex-direction: column;
-}
-.topbar {
-  min-height: 62px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 0 28px;
-  border-bottom: 1px solid var(--tp-border);
-  background: #fff;
-  flex-shrink: 0;
-}
-.page-context {
-  display: flex;
-  align-items: baseline;
-  gap: 13px;
-  min-width: 0;
-}
-.context-label {
-  color: #27384a;
-  font-size: 14px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-.context-project {
-  color: #8993a0;
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.content {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 0 28px;
+  min-width: 0;
+  height: calc(100% - 58px);
+  overflow: hidden;
 }
-.content :deep(.workspace-tabs > .n-tabs-nav) {
-  display: none;
-}
-.content :deep(.n-tab-pane) {
-  padding: 0;
-}
-.agent-float {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 1000;
-  pointer-events: none;
-}
-.agent-popover {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: min(540px, calc(100vw - 32px));
-  height: min(720px, calc(100vh - 40px));
+.agent-panel {
+  width: 38%;
+  min-width: 360px;
+  max-width: 620px;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid #d8dee5;
-  border-radius: 12px;
-  background: #fff;
-  box-shadow:
-    0 16px 48px rgba(15, 23, 42, 0.16),
-    0 0 0 1px rgba(0, 0, 0, 0.05);
-  pointer-events: auto;
+  border-right: 1px solid #e2e8f0;
+  background: #ffffff;
+  flex-shrink: 0;
 }
-.agent-popover-head {
-  height: 44px;
-  flex: 0 0 44px;
+.results {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #f8fafc;
+}
+.results-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 14px;
-  border-bottom: 1px solid #edf0f3;
-  color: #334456;
-  font-size: 12px;
-  font-weight: 600;
-  background: #ffffff;
+  gap: 15px;
+  padding: 14px 24px 6px;
+  flex-shrink: 0;
 }
-.agent-popover-head span {
+.heading-left strong { font-size: 15px; font-weight: 700; color: #1e293b; }
+.heading-desc { font-size: 12px; color: #64748b; margin-left: 10px; }
+
+.focus-pill {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  padding: 3px 8px;
+  border-radius: 6px;
+  max-width: 45%;
 }
-.agent-popover-head b {
-  width: 22px;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  border-radius: 5px;
-  background: #243b53;
-  color: #fff;
-  font-size: 9px;
+.focus-type-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: #1d4ed8;
+  background: #dbeafe;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
-.popover-close-btn {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: #7b8896;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.popover-close-btn:hover {
-  background: #f1f4f7;
-  color: #243b53;
-}
-.agent-trigger {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  border: 1px solid #243b53;
-  border-radius: 22px;
-  padding: 8px 8px 8px 8px;
-  background: #243b53;
-  color: #fff;
-  box-shadow: 0 4px 14px rgba(28, 41, 54, 0.2);
-  font: inherit;
+.focus-title {
   font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
+  color: #1e40af;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  pointer-events: auto;
-  transition:
-    transform 0.15s ease,
-    background 0.15s ease;
-}
-.agent-trigger:hover {
-  background: #304d69;
-  transform: translateY(-1px);
 }
 
-.popover-zoom-enter-active,
-.popover-zoom-leave-active {
-  transition:
-    opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-    transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  transform-origin: bottom right;
+.result-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 24px;
 }
-.popover-zoom-enter-from,
-.popover-zoom-leave-to {
-  opacity: 0;
-  transform: scale(0.95);
+.result-tabs :deep(.n-tabs-nav) {
+  display: none !important;
 }
+.result-tabs :deep(.n-tabs-pane-wrapper) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.result-tabs :deep(.n-tab-pane) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-top: 6px !important;
+  padding-bottom: 32px;
+  box-sizing: border-box;
+}
+.result-tabs :deep(.n-tab-pane.pane-requirement) {
+  overflow: hidden !important;
+  padding-bottom: 0 !important;
+  display: flex;
+  flex-direction: column;
+}
+.result-tabs :deep(.n-tabs-tab) { font-size: 13px; font-weight: 500; }
 
-.trigger-fade-enter-active,
-.trigger-fade-leave-active {
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
-  transform-origin: bottom right;
+.loading { display: grid; place-items: center; flex: 1; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+@media(max-width: 1100px) {
+  .app-header { padding-inline: 16px; gap: 14px; }
+  .brand { min-width: 140px; }
+  .project-context :deep(.n-select) { width: 140px; }
+  .agent-panel { min-width: 320px; width: 42%; }
+  .result-tabs, .results-heading { padding-inline: 16px; }
 }
-.trigger-fade-enter-from,
-.trigger-fade-leave-to {
-  opacity: 0;
-  transform: scale(0.9);
-}
-.trigger-mark {
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.38);
-  border-radius: 50%;
-  font-size: 8px;
-  letter-spacing: 0.02em;
-}
-@media (max-width: 760px) {
-  .sidebar {
-    width: 184px;
-    flex-basis: 184px;
-    padding-inline: 10px;
-  }
-  .topbar {
-    padding-inline: 16px;
-  }
-  .content {
-    padding-inline: 16px;
-  }
-}
-@media (max-width: 560px) {
-  .shell {
-    flex-direction: column;
-  }
-  .sidebar {
-    width: 100%;
-    flex: 0 0 auto;
-    padding: 10px 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--tp-border);
-  }
-  .brand {
-    padding: 0 2px 10px;
-  }
-  .project-control {
-    flex-direction: column;
-    padding: 0 0 10px;
-  }
-  .project-control :deep(.n-select) {
-    flex: 1;
-    min-width: 0;
-  }
-  .new-project {
-    width: auto;
-  }
-  .nav-label,
-  .sidebar-foot {
-    display: none;
-  }
-  .side-nav {
-    display: flex;
-    overflow-x: auto;
-  }
-  .side-nav button {
-    width: auto;
-    flex: 0 0 auto;
-    padding: 8px;
-  }
-  .nav-index {
-    display: none;
-  }
-  .topbar {
-    min-height: 56px;
-    padding-inline: 12px;
-  }
-  .page-context {
-    display: none;
-  }
-  .controls {
-    width: 100%;
-    justify-content: flex-end;
-  }
-  .content {
-    padding-inline: 10px;
-  }
-  .agent-float {
-    right: 12px;
-    bottom: 12px;
-  }
-  .agent-popover {
-    width: calc(100vw - 24px);
-    height: min(680px, calc(100vh - 92px));
-  }
+@media(max-width: 768px) {
+  .workspace { flex-direction: column; overflow: auto; }
+  .agent-panel { width: 100%; max-width: none; min-width: 0; height: 50vh; min-height: 360px; border-right: 0; border-bottom: 1px solid #e2e8f0; }
+  .results { min-height: 50vh; }
 }
 </style>
