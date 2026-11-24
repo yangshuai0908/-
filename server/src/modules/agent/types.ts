@@ -242,6 +242,7 @@ export interface ToolContext {
   role?: AgentRole
   currentRequirementId?: string | null
   workspace?: AgentWorkspaceContext
+  signal?: AbortSignal
 }
 
 export type AgentStreamEvent =

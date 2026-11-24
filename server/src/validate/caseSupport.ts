@@ -32,7 +32,7 @@ function gapKey(text: string): string {
 }
 
 /** 引用定位只是第一关；模型必须分别核对测试条件和预期结论。 */
-export async function assessCaseBatch(cases: TestCase[], chunks: Chunk[], sanitizeUnknownExpected = false): Promise<TestCase[]> {
+export async function assessCaseBatch(cases: TestCase[], chunks: Chunk[], sanitizeUnknownExpected = false, signal?: AbortSignal): Promise<TestCase[]> {
   if (!cases.length) return cases
   const byId = new Map(chunks.map((chunk) => [chunk.reqId, chunk]))
   const prepared = cases.map((c) => ({
@@ -55,7 +55,7 @@ export async function assessCaseBatch(cases: TestCase[], chunks: Chunk[], saniti
   const result = await chatJson(Result, [
     { role: 'system', content: `你是严格的需求依据审查员。逐条判断引用条款是否支持测试条件和预期结果。只输出 JSON。\nexplicit=原文明确支持；inferred=可合理推导但需要人工确认；unknown=原文没有规则。\n只出现相同业务名词不算支持。必须核对核心测试目标、具体边界条件、拒绝/成功结论。某引用只支持步骤而不支持预期时，expected=unknown。缺少最大值、最小值、长度、次数、时间限制时不能把自造边界或拒绝结论判为 explicit。99 件上限可以推导 100 件超限，但不得推导订单编号长度或金额限制。每个 evidence 都返回一项；gap 写需业务确认的问题。` },
     { role: 'user', content: `审查以下用例与所引用的条款。若有 confirmedTestPoint，必须另外核对用例目标是否与该已确认测试点一致，target=explicit 表示目标一致，inferred 表示需要人工核对，unknown 表示偏离或无法判断。返回 {"items":[{"caseIndex":0,"evidenceIndex":0,"condition":"explicit|inferred|unknown","expected":"explicit|inferred|unknown","target":"explicit|inferred|unknown","reason":"具体理由","gap":"需求未明确...，待业务确认"}]}：\n${JSON.stringify(payload)}` },
-  ], { label: '用例依据语义审查', maxTokens: 3000 })
+  ], { label: '用例依据语义审查', maxTokens: 3000, signal })
   const assessments = new Map(result.items.map((item) => [`${item.caseIndex}:${item.evidenceIndex}`, item]))
 
   return prepared.map((c, caseIndex) => {
@@ -105,8 +105,8 @@ export async function assessCaseBatch(cases: TestCase[], chunks: Chunk[], saniti
   })
 }
 
-export async function assessCases(cases: TestCase[], chunks: Chunk[], sanitizeUnknownExpected = false): Promise<TestCase[]> {
+export async function assessCases(cases: TestCase[], chunks: Chunk[], sanitizeUnknownExpected = false, signal?: AbortSignal): Promise<TestCase[]> {
   const checked: TestCase[] = []
-  for (let i = 0; i < cases.length; i += 3) checked.push(...await assessCaseBatch(cases.slice(i, i + 3), chunks, sanitizeUnknownExpected))
+  for (let i = 0; i < cases.length; i += 3) checked.push(...await assessCaseBatch(cases.slice(i, i + 3), chunks, sanitizeUnknownExpected, signal))
   return checked
 }

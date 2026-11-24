@@ -158,11 +158,11 @@ function askAgentForRemediation() {
     .slice(0, 3)
     .map((d) => `- ${d.title}: ${d.reason}`)
     .join("\n");
-  const prompt = `当前需求【${currentRequirement.value?.label}】质量评审报告如下：\n- 综合评分：${report.value.scores.total}/5 分\n- 条款覆盖率：${(report.value.coverageRate * 100).toFixed(1)}%\n- 覆盖缺口：${report.value.gaps.length} 处\n- 疑似重复用例：${report.value.duplicates.length} 组\n\n缺口示例：\n${gapList || "无"}\n\n疑似重复示例：\n${dupList || "无"}\n\n请由质量审查员给出审查建议，不新增或修改用例：\n1. 分析导致覆盖缺口的核心成因，并给出针对未覆盖条款的用例设计；\n2. 针对重复用例组提出合并去重建议；\n3. 列出需要需求分析师澄清、用例设计师修改和人工评审确认的事项，不保证评分或覆盖结果。`;
+  const prompt = `当前需求【${currentRequirement.value?.label}】质量评审报告如下：\n- 综合评分：${report.value.scores.total}/5 分\n- 条款覆盖率：${(report.value.coverageRate * 100).toFixed(1)}%\n- 覆盖缺口：${report.value.gaps.length} 处\n- 疑似重复用例：${report.value.duplicates.length} 组\n\n缺口示例：\n${gapList || "无"}\n\n疑似重复示例：\n${dupList || "无"}\n\n请给出审查建议，不新增或修改用例：\n1. 分析导致覆盖缺口的核心成因，并给出针对未覆盖条款的用例设计；\n2. 针对重复用例组提出合并去重建议；\n3. 列出需要澄清、用例修改和人工评审确认的事项，不保证评分或覆盖结果。`;
   sendToAgent({
     prompt,
     autoSend: true,
-    role: "reviewer",
+    role: "team",
     source: "review-remediation",
   });
 }
@@ -175,7 +175,7 @@ function askAgentForDuplicateFix(d: { title: string; reason: string; caseIds: st
   sendToAgent({
     prompt,
     autoSend: true,
-    role: "reviewer",
+    role: "team",
     source: "duplicate-fix",
   });
 }
@@ -209,11 +209,11 @@ async function handleMergeAllDuplicates() {
 }
 
 function askAgentForGapFix(g: any) {
-  const prompt = `条款【${g.reqId} · ${g.sectionPath}】目前处于未覆盖状态（严重级别：${severityLabel[g.severity] || "中"}，原因：${g.reason}）。\n请由需求分析师结合完整需求核对缺失的测试点和待澄清规则，只给出候选测试点建议，不直接生成用例。`;
+  const prompt = `条款【${g.reqId} · ${g.sectionPath}】目前处于未覆盖状态（严重级别：${severityLabel[g.severity] || "中"}，原因：${g.reason}）。\n请结合完整需求核对缺失的测试点和待澄清规则，只给出候选测试点建议，不直接生成用例。`;
   sendToAgent({
     prompt,
     autoSend: true,
-    role: "analyst",
+    role: "team",
     source: "gap-fix",
   });
 }
@@ -237,7 +237,7 @@ function askAgentForGapFix(g: any) {
           v-if="report"
           type="button"
           class="review-agent-action-btn"
-          title="质量审查员：整理问题和修改建议，不改写用例"
+          title="整理问题和修改建议，不改写用例"
           @click="askAgentForRemediation"
         >
           查看审查建议
@@ -383,7 +383,7 @@ function askAgentForGapFix(g: any) {
             <button
               type="button"
               class="gap-agent-btn"
-              title="需求分析师：核对遗漏测试点"
+              title="核对遗漏测试点"
               @click="askAgentForGapFix(g)"
             >
               ✦ AI 补齐用例

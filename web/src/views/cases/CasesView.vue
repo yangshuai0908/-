@@ -11,6 +11,7 @@ import { useCases } from "./composables/useCases";
 const {
   loading,
   generating,
+  cancelGeneration,
   recheckingAll,
   recheckedCount,
   progress,
@@ -36,7 +37,6 @@ const {
   dispatchCaseToRole,
   askAgentReviewLibrary,
   askAgentReviewSelection,
-  generateWithAgent,
   generate,
   patchCase,
   assessCase,
@@ -64,8 +64,8 @@ const {
         :rechecking-all="recheckingAll"
         :progress="progress"
         :estimate="estimate"
-        @generate-with-agent="generateWithAgent"
         @generate="generate"
+        @cancel-generation="cancelGeneration"
         @open-editor="openEditor"
       />
 

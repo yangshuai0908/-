@@ -10,5 +10,10 @@ export function blankAssessment(): Assessment {
   return { verdict: 'unreviewed', reviewer: '', comment: '', revisionCost: 'none', reviewedAt: null }
 }
 
+/** 获取用例的人工评审记录，缺失时使用默认待评审 */
+export function assessmentOf(c: { assessment?: Assessment | null }): Assessment {
+  return { ...blankAssessment(), ...(c.assessment ?? {}) }
+}
+
 /** 全平台统一的相对工作量刻度，不是工时 */
 export const COST_POINTS: Record<RevisionCost, number> = { none: 0, low: 1, medium: 3, high: 6 }

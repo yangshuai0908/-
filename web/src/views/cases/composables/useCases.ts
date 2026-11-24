@@ -1,4 +1,4 @@
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onScopeDispose, ref, watch } from "vue";
 import { useDialog, useMessage } from "naive-ui";
 import { api, streamGenerate, type AgentRole } from "../../../api/client";
 import {
@@ -12,7 +12,6 @@ import {
   setCanvasFocus,
 } from "../../../stores/workspace";
 import {
-  AGENT_ROLES,
   CATEGORY_LABEL,
   assessmentOf,
   evidenceNeedsRecheck,
@@ -35,6 +34,7 @@ export function useCases() {
 
   const loading = ref(false);
   const generating = ref(false);
+  let generationController: AbortController | null = null
   const recheckingAll = ref(false);
   const recheckedCount = ref(0);
   const progress = ref({ done: 0, total: 0, message: "" });
@@ -258,11 +258,11 @@ export function useCases() {
       : role === "qa_expert"
         ? '按原文依据优化当前这一条用例的前置条件、步骤和预期，使用 update_case 保存到该 caseId。保持验证目标，不新增用例；缺少规则时说明待澄清问题，停止改写。'
         : '结合原文核对该用例对应的业务规则和待澄清问题，不新增或修改用例。';
-    const prompt = AGENT_ROLES[role].label + '：' + task + '\n\n' + caseSnapshot;
+    const prompt = task + '\n\n' + caseSnapshot;
 
     sendToAgent({
       prompt,
-      role,
+      role: "team",
       autoSend: true,
       focus: {
         type: "case",
@@ -285,8 +285,8 @@ export function useCases() {
       return;
     }
     sendToAgent({
-      prompt: AGENT_ROLES.reviewer.label + '：请调用 review_cases 检查当前需求的测试用例，保存质量报告。检查依据、步骤、预期、引用覆盖和重复项；只给出修改建议，不新增、修改用例或代替人工评审。',
-      role: "reviewer",
+      prompt: '请调用 review_cases 检查当前需求的测试用例，保存质量报告。检查依据、步骤、预期、引用覆盖和重复项；只给出修改建议，不新增、修改用例或代替人工评审。',
+      role: "team",
       autoSend: true,
       source: "cases-quality-review",
     });
@@ -303,22 +303,13 @@ export function useCases() {
           `${i + 1}. 【${c.title}】(ID: "${c.id}", ${CATEGORY_LABEL[c.category]}, ${c.priority})\n   步骤: ${c.steps.join(" → ")}\n   预期: ${c.expected.join("；")}`,
       )
       .join("\n");
-    const prompt = AGENT_ROLES.reviewer.label + '：仅检查以下所选用例的原文依据、步骤、预期和重复风险，输出问题与修改建议。不要调用全量 review_cases，不新增或修改用例，不代替人工评审。\n\n' + summaryList;
+    const prompt = '仅检查以下所选用例的原文依据、步骤、预期和重复风险，输出问题与修改建议。不要调用全量 review_cases，不新增或修改用例，不代替人工评审。\n\n' + summaryList;
 
     sendToAgent({
       prompt,
-      role: "reviewer",
+      role: "team",
       autoSend: true,
       source: "batch-review",
-    });
-  }
-
-  function generateWithAgent() {
-    sendToAgent({
-      prompt: `请按已人工确认测试点生成用例，场景范围仅限：${selected.value.join("、")}。复用 generate_cases，保留原文依据和来源。`,
-      role: "qa_expert",
-      autoSend: true,
-      source: "case-generation",
     });
   }
 
@@ -348,6 +339,8 @@ export function useCases() {
     let receivedCase = false;
     let completed = false;
     let reportedError = false;
+    const controller = new AbortController()
+    generationController = controller
     generating.value = true;
     assumptions.value = [];
     progress.value = { done: 0, total: 0, message: "连接模型…" };
@@ -398,6 +391,7 @@ export function useCases() {
             message.error(evt.message ?? "生成失败");
           }
         },
+        controller.signal,
       );
       if (
         !completed &&
@@ -408,14 +402,18 @@ export function useCases() {
           "生成连接已结束但未收到完成结果，请刷新列表重试",
         );
     } catch (error) {
-      message.error((error as Error).message);
+      if (controller.signal.aborted) message.info("已停止生成；正在同步已保存的用例")
+      else message.error((error as Error).message);
     } finally {
+      if (generationController === controller) generationController = null
       generating.value = false;
       progress.value = { done: 0, total: 0, message: "" };
       bumpCases();
       if (currentRequirementId.value === requirementId) await loadCases();
     }
   }
+
+  function cancelGeneration() { generationController?.abort() }
 
   async function patchCase(c: TestCase, patch: Partial<TestCase>) {
     try {
@@ -592,9 +590,12 @@ export function useCases() {
     }
   }
 
+  onScopeDispose(cancelGeneration)
+
   return {
     loading,
     generating,
+    cancelGeneration,
     mergingDuplicates,
     recheckingAll,
     recheckedCount,
@@ -624,7 +625,6 @@ export function useCases() {
     consultAgentForCase,
     askAgentReviewLibrary,
     askAgentReviewSelection,
-    generateWithAgent,
     generate,
     patchCase,
     assessCase,

@@ -163,6 +163,7 @@ export async function analyzeRequirement(
   context?: unknown,
   onProgress?: (event: AnalysisProgressEvent) => void,
   force = false,
+  signal?: AbortSignal,
 ): Promise<RequirementAnalysis> {
   if (analyzing.has(requirementId)) throw new AppError('该需求正在分析，请稍后再试', 409)
   const requirement = repo.findById<RequirementVersion>('requirements', requirementId)
@@ -211,6 +212,7 @@ export async function analyzeRequirement(
       const analyzed = new Map<string, RequirementAnalysis['sections'][number]>()
       let totalExtractedPoints = 0
       for (let i = 0; i < stale.length; i += BATCH_SIZE) {
+        if (signal?.aborted) throw new AppError('需求分析已取消，已有分析保持不变', 499)
         const batchIndex = Math.floor(i / BATCH_SIZE) + 1
         const chunks = stale.slice(i, i + BATCH_SIZE)
         onProgress?.({
@@ -227,6 +229,7 @@ export async function analyzeRequirement(
           label: `需求分析-第${batchIndex}批`,
           jsonMode: true,
           noCache: force,
+          signal,
         }))
         const batchSections = buildAnalysisSections(result, chunks).map((section) => {
           const chunk = chunks.find(c => c.reqId === section.reqId)!
@@ -245,9 +248,11 @@ export async function analyzeRequirement(
           message: `第 ${batchIndex}/${totalBatches} 批分析完成，提炼出 ${batchPointsCount} 个测试点（累计 ${totalExtractedPoints} 个）`,
         })
       }
+      if (signal?.aborted) throw new AppError('需求分析已取消，已有分析保持不变', 499)
       const current = repo.findById<RequirementVersion>('requirements', requirementId)
       if (!current) throw new AppError('需求版本已删除，本次分析未保存', 404)
-      if (current.analysis?.id !== requirement.analysis?.id) throw new AppError('需求分析已更新，本次结果未覆盖保存', 409)
+      if (current.analysis?.id !== requirement.analysis?.id || current.analysis?.updatedAt !== requirement.analysis?.updatedAt)
+        throw new AppError('需求分析已更新，本次结果未覆盖保存', 409)
       const sections = requirement.chunks.map(chunk => analyzed.get(chunk.reqId) ?? fresh.get(chunk.reqId)!)
       const timestamp = nowIso()
       const analysis: RequirementAnalysis = { id: genId('analysis'), createdAt: timestamp, updatedAt: timestamp, sections }
@@ -309,39 +314,54 @@ function updateTestPointInternal(requirementId: string, pointId: string, input: 
   return updated
 }
 
+export interface BatchConfirmResult {
+  analysis: RequirementAnalysis
+  confirmedCount: number
+  skippedQuestionsCount: number
+  skippedUnmatchedCount: number
+}
+
 export async function batchConfirmPoints(
   requirementId: string,
   reviewer: string,
   options?: { onlyClear?: boolean; comment?: string },
-): Promise<{ analysis: RequirementAnalysis; confirmedCount: number }> {
+): Promise<BatchConfirmResult> {
   if (analyzing.has(requirementId)) throw new AppError('该需求正在分析，暂时不能确认测试点', 409)
   if (!reviewer.trim()) throw new AppError('请填写核对人姓名')
   const requirement = repo.findById<RequirementVersion>('requirements', requirementId)
   if (!requirement || !requirement.analysis) throw new AppError('需求或分析不存在', 404)
   const analysis = requirement.analysis
   let confirmedCount = 0
+  let skippedQuestionsCount = 0
+  let skippedUnmatchedCount = 0
   const now = nowIso()
 
   const updatedSections = analysis.sections.map((section) => ({
     ...section,
     points: section.points.map((point) => {
+      if (point.status !== 'pending') return point
       const allMatched = point.evidence.length > 0 && point.evidence.every((e) => e.matched)
       const hasQuestions = Boolean(point.questions && point.questions.length > 0)
-      if (point.status === 'pending' && allMatched && (!hasQuestions || (!options?.onlyClear && Boolean(options?.comment?.trim())))) {
-        confirmedCount++
-        return {
-          ...point,
-          status: 'confirmed' as const,
-          review: {
-            actor: 'human' as const,
-            reviewer: reviewer.trim(),
-            at: now,
-            comment: options?.comment?.trim() || '批量人工确认',
-            clarification: hasQuestions ? options!.comment!.trim() : '',
-          },
-        }
+      if (!allMatched) {
+        skippedUnmatchedCount++
+        return point
       }
-      return point
+      if (hasQuestions && (options?.onlyClear || !options?.comment?.trim())) {
+        skippedQuestionsCount++
+        return point
+      }
+      confirmedCount++
+      return {
+        ...point,
+        status: 'confirmed' as const,
+        review: {
+          actor: 'human' as const,
+          reviewer: reviewer.trim(),
+          at: now,
+          comment: options?.comment?.trim() || '批量人工确认',
+          clarification: hasQuestions ? options!.comment!.trim() : '',
+        },
+      }
     }),
   }))
 
@@ -351,5 +371,5 @@ export async function batchConfirmPoints(
     sections: updatedSections,
   }
   repo.update<RequirementVersion>('requirements', requirementId, { analysis: updated })
-  return { analysis: updated, confirmedCount }
+  return { analysis: updated, confirmedCount, skippedQuestionsCount, skippedUnmatchedCount }
 }

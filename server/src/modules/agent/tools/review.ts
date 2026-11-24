@@ -10,7 +10,7 @@ export const reviewTool = {
   async execute(args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
     const requirement = scopedRequirement(ctx.projectId, args.requirementId ?? ctx.currentRequirementId)
     const cases = repo.all<TestCase>('cases').filter((c) => c.requirementId === requirement.id)
-    const report = await createReviewReport(requirement.id)
+    const report = await createReviewReport(requirement.id, ctx.signal)
 
     return {
       changes: ['review'],

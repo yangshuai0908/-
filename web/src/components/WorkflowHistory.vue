@@ -14,7 +14,7 @@ const detail = ref<WorkflowTrace | null>(null)
 const loading = ref(false)
 const error = ref('')
 let requestId = 0
-const kinds = { analysis: '需求分析', generation: '生成用例', point_edit: '测试点修改 / 确认', case_edit: '用例修改', assessment: '人工评审', recheck: '重新校验依据' }
+const kinds = { analysis: '需求分析', generation: '生成用例', point_edit: '测试点修改 / 确认', case_edit: '用例修改', assessment: '单条用例评审', recheck: '重新校验依据', review: '用例评审报告', compare: '版本对比', agent: 'Agent 执行' }
 const statuses = { running: '进行中', succeeded: '成功', partial: '部分成功', failed: '失败', interrupted: '已中断' }
 function time(value: string) { return new Date(value).toLocaleString('zh-CN') }
 function json(value: unknown) { return JSON.stringify(value, null, 2) }

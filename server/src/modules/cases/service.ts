@@ -23,7 +23,13 @@ function findRequirement(id: string) {
   return requirement
 }
 
-export async function createCase(requirement: RequirementVersion, input: unknown, actor: 'human' | 'agent' = 'human') {
+export async function createCase(
+  requirement: RequirementVersion,
+  input: unknown,
+  actor: 'human' | 'agent' = 'human',
+  basedOn?: { id: string; updatedAt: string },
+  signal?: AbortSignal,
+) {
   const rid = requirement.id
   const body = caseInput(input)
   if (actor === 'agent' && (!body.title?.trim() || !body.steps?.some(s => s.trim()) || !body.expected?.some(s => s.trim()) || !body.evidence?.length))
@@ -56,13 +62,16 @@ export async function createCase(requirement: RequirementVersion, input: unknown
     updatedAt: nowIso(),
   }
 
-  const [checked] = await assessCases([testCase], requirement.chunks)
+  const [checked] = await assessCases([testCase], requirement.chunks, false, signal)
+  if (signal?.aborted) throw new AppError('用例创建已取消，未保存', 499)
+  if (basedOn && repo.findById<TestCase>('cases', basedOn.id)?.updatedAt !== basedOn.updatedAt)
+    throw new AppError('来源用例在校验期间已被修改，请刷新对比报告后重试', 409)
   repo.insert('cases', checked)
   recordChange('case_edit', requirement, { action: actor === 'agent' ? 'Agent 新增' : '手动新增', actor }, checked, [checked.id])
   return checked
 }
 
-export async function updateCase(cid: string, input: unknown, actor: 'human' | 'agent' = 'human') {
+export async function updateCase(cid: string, input: unknown, actor: 'human' | 'agent' = 'human', signal?: AbortSignal) {
   const existing = repo.findById<TestCase>('cases', cid)
   if (!existing) throw new AppError('用例不存在', 404)
 
@@ -96,12 +105,13 @@ export async function updateCase(cid: string, input: unknown, actor: 'human' | '
       return JSON.stringify(patch[key as keyof TestCase]) !== JSON.stringify(existing[key as keyof TestCase])
     })
     if (contentChanged) {
-      const [checked] = await assessCases([{ ...existing, ...patch, origin: 'manual' }], requirement.chunks)
+      const [checked] = await assessCases([{ ...existing, ...patch, origin: 'manual' }], requirement.chunks, false, signal)
       patch.evidence = checked.evidence
       patch.assumptions = checked.assumptions
       patch.assessment = blankAssessment()
     }
 
+    if (signal?.aborted) throw new AppError('用例修改已取消，未保存', 499)
     if (repo.findById<TestCase>('cases', cid)?.updatedAt !== previousUpdatedAt)
       throw new AppError('用例在校验期间已被修改，请刷新后重试', 409)
     const updated = await traceStep('保存用例修改', { patch }, () => repo.update<TestCase>('cases', cid, patch))

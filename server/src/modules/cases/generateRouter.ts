@@ -14,10 +14,12 @@ function categoriesOf(input: unknown): Category[] {
 generateRouter.post('/generate', async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
   const send = (event: unknown) => { if (!res.writableEnded && !res.destroyed) res.write('data: ' + JSON.stringify(event) + '\n\n') }
+  const controller = new AbortController()
+  res.on('close', () => { if (!res.writableEnded) controller.abort() })
   try {
     const requirement = repo.findById<RequirementVersion>('requirements', String(req.body?.requirementId ?? ''))
     if (!requirement) throw new AppError('需求版本不存在', 404)
-    await generateConfirmedCases(requirement, categoriesOf(req.body?.categories), Boolean(req.body?.overwrite), send)
+    await generateConfirmedCases(requirement, categoriesOf(req.body?.categories), Boolean(req.body?.overwrite), send, controller.signal)
   } catch (error) {
     send({ type: 'error', message: error instanceof Error ? error.message : String(error) })
   } finally {

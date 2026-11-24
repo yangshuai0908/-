@@ -141,7 +141,7 @@ function hasPatch(
   const p = a.patch;
   if (!p) return false;
   return Boolean(
-    p.title || p.precondition || p.steps?.length || p.expected?.length,
+    p.title || p.precondition || p.steps?.length || p.expected?.length || p.evidence?.length,
   );
 }
 
@@ -153,11 +153,11 @@ function askAgentForStrategy() {
     .slice(0, 8)
     .map((c) => `- [${TYPE_LABEL[c.type]}] ${c.sectionPath}`)
     .join("\n");
-  const prompt = `我对需求版本进行了对比：从【${fromName}】升级到【${toName}】。\n统计数据：\n- 修改条款：${stats.value.modified} 处\n- 新增条款：${stats.value.added} 处\n- 删除条款：${stats.value.removed} 处\n- 波及已有用例：${report.value.impactedCaseIds.length} 条\n\n核心变化条款示例：\n${changedPaths || "无显著变更"}\n\n系统建议：建议新增用例 ${report.value.results.newCases.length} 条，建议调整用例 ${report.value.results.adjustedCases.length} 条，建议废弃用例 ${report.value.results.deprecatedCases.length} 条。\n\n请由需求分析师评估版本影响，不新增或修改用例：\n1. 评估本次版本迭代的核心业务影响与高危失效风险点；\n2. 制定精准的回归测试范围（哪些模块需全量回归，哪些只需冒烟验证）；\n3. 给出测试用例资产的迁移与调整执行步骤清单。`;
+  const prompt = `我对需求版本进行了对比：从【${fromName}】升级到【${toName}】。\n统计数据：\n- 修改条款：${stats.value.modified} 处\n- 新增条款：${stats.value.added} 处\n- 删除条款：${stats.value.removed} 处\n- 波及已有用例：${report.value.impactedCaseIds.length} 条\n\n核心变化条款示例：\n${changedPaths || "无显著变更"}\n\n系统建议：建议新增用例 ${report.value.results.newCases.length} 条，建议调整用例 ${report.value.results.adjustedCases.length} 条，建议废弃用例 ${report.value.results.deprecatedCases.length} 条。\n\n请评估版本影响，不新增或修改用例：\n1. 评估本次版本迭代的核心业务影响与高危失效风险点；\n2. 制定精准的回归测试范围（哪些模块需全量回归，哪些只需冒烟验证）；\n3. 给出测试用例资产的迁移与调整执行步骤清单。`;
   sendToAgent({
     prompt,
     autoSend: true,
-    role: "analyst",
+    role: "team",
     source: "compare-strategy",
   });
 }

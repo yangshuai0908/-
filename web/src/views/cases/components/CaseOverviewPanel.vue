@@ -2,7 +2,7 @@
 import { NButton } from "naive-ui";
 import { computed } from "vue";
 import type { CoverageReport, EvidenceState, TestCase } from "../../../types";
-import { AGENT_ROLES, CATEGORY_LABEL } from "../../../types";
+import { CATEGORY_LABEL } from "../../../types";
 import { cases } from "../../../stores/workspace";
 
 const props = defineProps<{
@@ -46,10 +46,10 @@ function findAndOpenCase(id: string) {
 </script>
 
 <template>
-  <details class="quality-summary">
+  <details v-if="stats.total > 0" class="quality-summary">
     <summary>质量提示<span>待人工评审 {{ stats.pending }}</span><span v-if="stats.byState.unknown">依据不足 {{ stats.byState.unknown }}</span><span v-if="stats.byState.inferred">推导待确认 {{ stats.byState.inferred }}</span><span v-if="gapRows.length">待澄清 {{ gapRows.length }}</span><span v-if="duplicates.length">近似重复 {{ duplicates.length }} 组</span><span v-if="coverage && coverage.summary.scenarios">场景覆盖 {{ coverage.summary.covered }}/{{ coverage.summary.scenarios }}</span><span v-if="coverage && coverage.summary.stale">分析已更新 {{ coverage.summary.stale }}</span></summary>
     <div class="quality-details">
-      <p>模型检查由{{ AGENT_ROLES.reviewer.label }}负责，最终结论由人工评审。</p>
+      <p>模型质量检查提供辅助建议，最终结论由人工评审把关。</p>
       <p v-if="stats.pendingValidation">{{ stats.pendingValidation }} 条依据需要重新校验，可在列表的“更多操作”中执行。</p>
       <details v-if="coverageGaps.length">
         <summary>场景覆盖缺口（{{ coverageGaps.length }} 个测试点未覆盖完整，含被合并/去重的场景）</summary>

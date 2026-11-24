@@ -61,7 +61,7 @@ export interface GenerationEvent {
   summary?: { total: number; unverified: number; errors: number }
 }
 
-export async function generateConfirmedCases(requirement: RequirementVersion, categories: Category[], overwrite = false, emit: (event: GenerationEvent) => void = () => {}) {
+export async function generateConfirmedCases(requirement: RequirementVersion, categories: Category[], overwrite = false, emit: (event: GenerationEvent) => void = () => {}, signal?: AbortSignal) {
   if (generating.has(requirement.id)) throw new AppError('该需求正在生成，请勿重复提交', 409)
   generating.add(requirement.id)
   // 固定当时的条款与确认结果，生成期间的修改不能悄悄改变本次输入。
@@ -70,6 +70,7 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
     return await traceWorkflow('generation', snapshot, { requirement: snapshot, categories, overwrite, promptVersion: GENERATION_VERSION }, async run => {
       emit({ type: 'trace', runId: run.id })
       const plan = await traceStep('检查已确认测试点', { categories }, () => {
+        if (signal?.aborted) throw new AppError('用例生成已取消', 499)
         if (!categories.length) throw new AppError('至少选择一个场景类型')
         if (!snapshot.analysis) throw new AppError('请先分析需求并人工确认测试点')
         const plan = generationPlan(snapshot, categories)
@@ -103,6 +104,7 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
       const pointById = new Map(plan.points.map(point => [point.id, point]))
       const processBatch = async (index: number, batch: Scenario[]) => {
         try {
+          if (signal?.aborted) throw new AppError('用例生成已取消', 499)
           const points = [...new Set(batch.map(scenario => scenario.pointId))].map(id => pointById.get(id)!)
           const ids = new Set(points.flatMap(point => point.evidence.map(e => e.reqId)))
           const chunks = snapshot.chunks.filter(chunk => ids.has(chunk.reqId))
@@ -110,7 +112,7 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
           const result = await traceStep(`第 ${index + 1} 批：场景槽位填充`, { scenarios: batch }, async () => {
             return await chatJson(batchFillSchema(batch, chunks), buildScenarioMessages({
               chunks, points, scenarios: batch, apiList: snapshot.apiList,
-            }), { label: `场景填充-${index + 1}`, jsonMode: true })
+            }), { label: `场景填充-${index + 1}`, jsonMode: true, signal })
           })
 
           const built = await traceStep(`第 ${index + 1} 批：按骨架确定性渲染用例`, result, () => {
@@ -135,7 +137,7 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
             })
           })
 
-          const checked = await traceStep(`第 ${index + 1} 批：语义复核测试条件与预期`, built, () => assessCases(built, snapshot.chunks, true))
+          const checked = await traceStep(`第 ${index + 1} 批：语义复核测试条件与预期`, built, () => assessCases(built, snapshot.chunks, true, signal))
 
           const batchToEmit: TestCase[] = []
           await mutex.runExclusive(async () => {
@@ -183,7 +185,7 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error)
           errors.push(`第 ${index + 1} 批：${reason}`)
-          if (isInsufficientBalanceError(error)) stopScheduling = true
+          if (isInsufficientBalanceError(error) || signal?.aborted) stopScheduling = true
           emit({ type: 'error', message: errors.at(-1), runId: run.id })
         } finally {
           completedBatches++
@@ -209,7 +211,8 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
         else break
       }
       if (stopScheduling && nextBatch < totalBatches) {
-        const reason = '模型余额不足，未请求此批次；补充余额后可重新生成'
+        const cancelled = signal?.aborted
+        const reason = cancelled ? '用户取消，未请求此批次' : '模型余额不足，未请求此批次；补充余额后可重新生成'
         for (const batch of plan.batches.slice(nextBatch)) {
           for (const scenario of batch) {
             const point = pointById.get(scenario.pointId)!
@@ -221,11 +224,17 @@ export async function generateConfirmedCases(requirement: RequirementVersion, ca
             })
           }
         }
-        const message = `模型余额不足，已停止后续 ${totalBatches - nextBatch} 批；成功批次结果已保留`
+        const message = cancelled
+          ? `已停止后续 ${totalBatches - nextBatch} 批；成功批次结果已保留`
+          : `模型余额不足，已停止后续 ${totalBatches - nextBatch} 批；成功批次结果已保留`
         errors.push(message)
         emit({ type: 'error', message, runId: run.id })
       }
-      if (overwrite && errors.length) throw new AppError('重新生成存在失败批次，原有用例已保留；请查看追溯记录后重试')
+      if (overwrite && errors.length) {
+        if (signal?.aborted) throw new AppError('用户取消重新生成，原有用例已保留', 499)
+        throw new AppError('重新生成存在失败批次，原有用例已保留；请查看追溯记录后重试')
+      }
+      if (signal?.aborted && !created.length) throw new AppError('用例生成已取消；本次没有保存新用例', 499)
       if (errors.length && !created.length) throw new AppError('本次没有成功生成用例，请查看失败步骤后重试')
       await traceStep('检查输入未变化并保存用例', { candidates: created, overwrite }, () => {
         const current = repo.findById<RequirementVersion>('requirements', snapshot.id)

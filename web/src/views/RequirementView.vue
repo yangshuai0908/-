@@ -64,15 +64,10 @@ function onTextInput() {
   if (hasFile.value) clearFile();
 }
 
-/** 正在展开查看条款的版本；为空时跟随顶部的版本下拉 */
-const viewingId = ref<string | null>(null);
-
 const activeRequirement = computed(() => {
-  const candidate = viewingId.value
-    ? (requirements.value.find((r) => r.id === viewingId.value) ??
-      currentRequirement.value)
-    : currentRequirement.value;
-  return candidate?.projectId === currentProjectId.value ? candidate : null;
+  return currentRequirement.value?.projectId === currentProjectId.value
+    ? currentRequirement.value
+    : null;
 });
 
 /** 预览优先，其次显示当前选中版本的条款 */
@@ -119,7 +114,6 @@ function clearPreview() {
 watch(
   [currentProjectId, currentRequirementId],
   () => {
-    viewingId.value = null;
     clearPreview();
     searchKeyword.value = "";
     selectedApi.value = null;
@@ -214,7 +208,6 @@ async function preview() {
     hasPreview.value = true;
     previewChunks.value = res.chunks;
     previewApis.value = res.apiList;
-    viewingId.value = null;
     message.success(`切出 ${res.chunks.length} 条条款`);
   } catch (e) {
     message.error((e as Error).message);
@@ -262,7 +255,6 @@ async function save() {
     showInputPanel.value = false;
     emit("refresh");
     currentRequirementId.value = created.id;
-    viewingId.value = created.id;
   } catch (e) {
     message.error((e as Error).message);
   } finally {
@@ -271,7 +263,6 @@ async function save() {
 }
 
 function view(r: RequirementVersion) {
-  viewingId.value = r.id;
   currentRequirementId.value = r.id;
   clearPreview();
 }
@@ -285,7 +276,7 @@ function removeRequirement(r: RequirementVersion) {
     onPositiveClick: async () => {
       try {
         await api.deleteRequirement(r.id);
-        if (viewingId.value === r.id) viewingId.value = null;
+        if (currentRequirementId.value === r.id) currentRequirementId.value = null;
         message.success("已删除");
         emit("refresh");
       } catch (e) {

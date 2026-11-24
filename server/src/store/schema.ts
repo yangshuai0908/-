@@ -257,6 +257,7 @@ export const LlmAdjustedCaseSchema = z.object({
       precondition: z.string().optional(),
       steps: z.array(z.string()).optional(),
       expected: z.array(z.string()).optional(),
+        evidence: z.array(z.object({ reqId: z.string(), quote: z.string() })).optional(),
     })
     .optional(),
 })
@@ -297,6 +298,7 @@ export const CompareReportSchema = z.object({
               precondition: z.string().optional(),
               steps: z.array(z.string()).optional(),
               expected: z.array(z.string()).optional(),
+              evidence: z.array(z.object({ reqId: z.string(), quote: z.string() })).optional(),
             })
             .optional(),
         }),

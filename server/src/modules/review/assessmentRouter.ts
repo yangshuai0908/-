@@ -43,7 +43,7 @@ function requirementOf(rid: string): RequirementVersion {
 }
 
 /** 人工评审汇总：不依赖模型，也不依赖是否跑过系统评审 */
-assessmentRouter.get('/requirements/:rid/assessment-summary', (req, res) => {
+assessmentRouter.get(['/requirements/:rid/assessment-summary', '/requirements/:rid/assessments/summary'], (req, res) => {
   const rid = String(req.params.rid)
   const requirement = requirementOf(rid)
   const gapReviews = repo.all<GapReview>('gapReviews').filter((g) => g.requirementId === rid)

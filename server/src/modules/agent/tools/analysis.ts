@@ -8,7 +8,7 @@ export const analysisTool = {
   async execute(args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
     const requirement = scopedRequirement(ctx.projectId, args.requirementId ?? ctx.currentRequirementId)
     const reused = Boolean(requirement.analysis)
-    const analysis = await analyzeRequirement(requirement.id)
+    const analysis = await analyzeRequirement(requirement.id, undefined, undefined, undefined, false, ctx.signal)
     const points = analysis.sections.flatMap((section) => section.points)
     return {
       changes: reused ? [] : ['requirements'],

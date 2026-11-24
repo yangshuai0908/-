@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { NButton, NTag } from "naive-ui";
 import {
-  AGENT_ROLES,
   isHumanConfirmed,
   CATEGORY_COLOR,
   CATEGORY_LABEL,
@@ -155,7 +154,7 @@ const statusType = {
         <button
           type="button"
           class="ask-agent-question-btn"
-          :title="AGENT_ROLES.analyst.label + '：整理具体的待澄清问题'"
+          title="整理具体的待澄清问题"
           @click.stop="emit('askAgentForPointQuestions', point, section)"
         >
           整理澄清问题
@@ -177,7 +176,7 @@ const statusType = {
     </div>
 
     <div class="point-agent-bar">
-      <button type="button" class="point-agent-btn analyst" :disabled="busy" :title="AGENT_ROLES.analyst.label + '：核对原文依据和待澄清规则，不生成用例'" @click.stop="emit('consultPoint', point, section)">核对测试点</button>
+      <button type="button" class="point-agent-btn analyst" :disabled="busy" title="核对原文依据和待澄清规则，不生成用例" @click.stop="emit('consultPoint', point, section)">核对测试点</button>
     </div>
   </div>
 </template>

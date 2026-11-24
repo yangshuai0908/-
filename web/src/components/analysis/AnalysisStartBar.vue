@@ -25,8 +25,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   requestAnalysis: [];
+  cancelAnalysis: [];
   scanVulnerabilities: [];
-  analyzePathways: [];
 }>();
 </script>
 
@@ -39,13 +39,16 @@ const emit = defineEmits<{
       }}</n-tag>
     </div>
     <div class="button-row">
-      <details v-if="analysis" class="extra-analysis">
-        <summary>补充分析</summary>
-        <div class="extra-menu">
-          <button type="button" class="ai-tool-btn ai-hunter-btn" :disabled="busy || hasDraft" title="需求分析师：提出待核对风险，不生成用例" @click="emit('scanVulnerabilities')">风险走查</button>
-          <button type="button" class="ai-tool-btn ai-analyst-btn" :disabled="busy || hasDraft" title="需求分析师：梳理业务路径和待澄清规则" @click="emit('analyzePathways')">梳理业务路径</button>
-        </div>
-      </details>
+      <n-button
+        v-if="analysis"
+        size="small"
+        secondary
+        :disabled="busy || hasDraft"
+        title="走查需求中的规则矛盾、时序与并发隐患"
+        @click="emit('scanVulnerabilities')"
+      >
+        🛡️ 风险走查
+      </n-button>
       <n-button
         size="small"
         type="primary"
@@ -64,6 +67,7 @@ const emit = defineEmits<{
         <n-spin size="small" />
         <strong>大模型测试分析实时控制台</strong>
         <n-tag size="tiny" type="info" :bordered="false">深度剖析中</n-tag>
+        <n-button size="tiny" quaternary type="warning" @click="emit('cancelAnalysis')">停止分析</n-button>
       </div>
       <div class="inspector-badge">
         已提炼测试点：<strong class="highlight-number">{{ analysisProgress.totalPoints }}</strong> 个

@@ -5,7 +5,6 @@ import { buildCompareMessages } from '../../prompts/compare.js'
 import * as repo from '../../store/fsRepo.js'
 import {
   LlmCompareResultSchema,
-  blankAssessment,
   type ChangeItem,
   type CompareReport,
   type LlmCompareResult,
@@ -13,8 +12,8 @@ import {
   type TestCase,
 } from '../../store/schema.js'
 import { AppError, genId, nowIso } from '../../utils.js'
-import { buildCase } from '../cases/buildCase.js'
-import { assessCases } from '../../validate/caseSupport.js'
+import { createCase } from '../cases/service.js'
+import { traceWorkflow } from '../../trace.js'
 
 export const compareRouter = Router()
 
@@ -34,6 +33,7 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 async function compareInBatches(
   changes: ChangeItem[],
   impacted: TestCase[],
+  signal?: AbortSignal,
 ): Promise<LlmCompareResult> {
   const relevant = changes.filter((c) => c.type !== 'unchanged')
   const batches = chunkArray(relevant, MAX_CHANGES_PER_BATCH)
@@ -59,7 +59,7 @@ async function compareInBatches(
     const r = await chatJson(
       LlmCompareResultSchema,
       buildCompareMessages({ changes: batch, impactedCases: related, removedCaseIds }),
-      { label: `需求变更对比 ${i + 1}/${batches.length}` },
+      { label: `需求变更对比 ${i + 1}/${batches.length}`, signal },
     )
     merged.newCases.push(...r.newCases)
     merged.adjustedCases.push(...r.adjustedCases)
@@ -92,10 +92,12 @@ async function compareInBatches(
   return merged
 }
 
-export async function createCompareReport(projectId: string, fromReqId: string, toReqId: string): Promise<CompareReport> {
-  const from = repo.findById<RequirementVersion>('requirements', fromReqId)
-  const to = repo.findById<RequirementVersion>('requirements', toReqId)
-  if (!from || !to) throw new AppError('需求版本不存在', 404)
+async function createCompareReportInternal(projectId: string, fromReqId: string, toReqId: string, signal?: AbortSignal): Promise<CompareReport> {
+  const fromRecord = repo.findById<RequirementVersion>('requirements', fromReqId)
+  const toRecord = repo.findById<RequirementVersion>('requirements', toReqId)
+  if (!fromRecord || !toRecord) throw new AppError('需求版本不存在', 404)
+  const from = structuredClone(fromRecord)
+  const to = structuredClone(toRecord)
   if (from.projectId !== projectId || to.projectId !== projectId) throw new AppError('需求版本不属于当前项目')
   try {
     assertComparable(from, to)
@@ -104,7 +106,7 @@ export async function createCompareReport(projectId: string, fromReqId: string, 
   }
 
   const diff = diffChunks(from.chunks, to.chunks)
-  const allCases = repo.all<TestCase>('cases').filter((c) => c.requirementId === fromReqId)
+  const allCases = structuredClone(repo.all<TestCase>('cases').filter((c) => c.requirementId === fromReqId))
   const { impacted } = findImpactedCases(allCases, diff)
 
   const relevantChanges = diff.changes.filter((c) => c.type !== 'unchanged')
@@ -123,7 +125,17 @@ export async function createCompareReport(projectId: string, fromReqId: string, 
     return report
   }
 
-  const result = await compareInBatches(diff.changes, impacted)
+  const result = await compareInBatches(diff.changes, impacted, signal)
+
+  const currentFrom = repo.findById<RequirementVersion>('requirements', fromReqId)
+  const currentTo = repo.findById<RequirementVersion>('requirements', toReqId)
+  const currentCases = repo.all<TestCase>('cases').filter((c) => c.requirementId === fromReqId)
+  if (!currentFrom || !currentTo
+    || JSON.stringify(currentFrom.chunks) !== JSON.stringify(from.chunks)
+    || JSON.stringify(currentTo.chunks) !== JSON.stringify(to.chunks)
+    || JSON.stringify(currentCases) !== JSON.stringify(allCases)) {
+    throw new AppError('版本或用例在对比期间已变化，本次报告未保存；请刷新后重试', 409)
+  }
 
   const report: CompareReport = {
     id: genId('cmp'),
@@ -155,11 +167,21 @@ export async function createCompareReport(projectId: string, fromReqId: string, 
   return report
 }
 
+export async function createCompareReport(projectId: string, fromReqId: string, toReqId: string, signal?: AbortSignal): Promise<CompareReport> {
+  const from = repo.findById<RequirementVersion>('requirements', fromReqId)
+  if (!from) throw new AppError('需求版本不存在', 404)
+  return traceWorkflow('compare', from, { projectId, fromReqId, toReqId }, () =>
+    createCompareReportInternal(projectId, fromReqId, toReqId, signal))
+}
+
 compareRouter.post('/compare', async (req, res) => {
+  const controller = new AbortController()
+  res.on('close', () => { if (!res.writableEnded) controller.abort() })
   const report = await createCompareReport(
     String(req.body?.projectId ?? ''),
     String(req.body?.fromReqId ?? ''),
     String(req.body?.toReqId ?? ''),
+    controller.signal,
   )
   res.json(report)
 })
@@ -181,6 +203,8 @@ compareRouter.get('/compare/:cid', (req, res) => {
 
 /** 把对比建议里的「新增用例」落到用例表 */
 compareRouter.post('/compare/:cid/apply-new/:index', async (req, res) => {
+  const controller = new AbortController()
+  res.on('close', () => { if (!res.writableEnded) controller.abort() })
   const report = repo.findById<CompareReport>('compares', String(req.params.cid))
   if (!report) throw new AppError('对比报告不存在', 404)
 
@@ -191,19 +215,13 @@ compareRouter.post('/compare/:cid/apply-new/:index', async (req, res) => {
   const requirement = repo.findById<RequirementVersion>('requirements', report.toReqId)
   if (!requirement) throw new AppError('目标需求版本不存在', 404)
 
-  const testCase = buildCase(raw, {
-    projectId: report.projectId,
-    requirementId: report.toReqId,
-    category: raw.category ?? 'normal',
-    chunks: requirement.chunks,
-  })
-  const [checked] = await assessCases([testCase], requirement.chunks, true)
-  repo.insert('cases', checked)
-  res.json(checked)
+  res.json(await createCase(requirement, raw, 'human', undefined, controller.signal))
 })
 
 /** 把对比建议里的「调整」应用到已有用例 */
 compareRouter.post('/compare/:cid/apply-adjust/:index', async (req, res) => {
+  const controller = new AbortController()
+  res.on('close', () => { if (!res.writableEnded) controller.abort() })
   const report = repo.findById<CompareReport>('compares', String(req.params.cid))
   if (!report) throw new AppError('对比报告不存在', 404)
 
@@ -213,19 +231,27 @@ compareRouter.post('/compare/:cid/apply-adjust/:index', async (req, res) => {
 
   const existing = repo.findById<TestCase>('cases', advice.caseId)
   if (!existing) throw new AppError('对应用例已不存在', 404)
+  if (existing.requirementId !== report.fromReqId || existing.projectId !== report.projectId)
+    throw new AppError('对比报告中的来源用例已不属于原需求版本', 409)
+  if (Date.parse(existing.updatedAt) > Date.parse(report.createdAt))
+    throw new AppError('来源用例在对比报告生成后已修改，请重新生成对比报告', 409)
 
-  const patch: Partial<TestCase> = { updatedAt: nowIso() }
-  if (advice.patch?.title) patch.title = advice.patch.title
-  if (advice.patch?.precondition !== undefined) patch.precondition = advice.patch.precondition
-  if (advice.patch?.steps) patch.steps = advice.patch.steps
-  if (advice.patch?.expected) patch.expected = advice.patch.expected
-
-  const requirement = repo.findById<RequirementVersion>('requirements', existing.requirementId)
-  if (!requirement) throw new AppError('需求版本不存在', 404)
-  const [checked] = await assessCases([{ ...existing, ...patch }], requirement.chunks)
-  patch.evidence = checked.evidence
-  patch.assumptions = checked.assumptions
-  patch.assessment = blankAssessment()
-  const updated = repo.update<TestCase>('cases', advice.caseId, patch)
-  res.json(updated)
+  const requirement = repo.findById<RequirementVersion>('requirements', report.toReqId)
+  if (!requirement) throw new AppError('目标需求版本不存在', 404)
+  const remap = new Map(report.changes
+    .filter(change => change.fromReqId && change.toReqId)
+    .map(change => [change.fromReqId!, change.toReqId!]))
+  const evidence = advice.patch?.evidence ?? existing.evidence.map(({ reqId, quote }) => ({ reqId: remap.get(reqId) ?? reqId, quote }))
+  const migrated = await createCase(requirement, {
+    title: advice.patch?.title ?? existing.title,
+    category: existing.category,
+    priority: existing.priority,
+    module: existing.module,
+    precondition: advice.patch?.precondition ?? existing.precondition,
+    steps: advice.patch?.steps ?? existing.steps,
+    expected: advice.patch?.expected ?? existing.expected,
+    evidence,
+    assumptions: existing.assumptions,
+  }, 'human', { id: existing.id, updatedAt: existing.updatedAt }, controller.signal)
+  res.json(migrated)
 })

@@ -50,7 +50,7 @@ export function buildCompareMessages(params: {
     '',
     '【任务】针对上面的变更，判断已有用例该怎么处理：',
     '1. newCases：针对新增条款、或修改后出现的新规则，需要新增的用例（格式与生成用例一致，evidence 必须引用改后条款的 reqId 和改后原文）',
-    '2. adjustedCases：已有用例需要调整的，caseId 用上面给出的 id，写清 reason（为什么改）、change（改什么），patch 里给出修改后的字段',
+    '2. adjustedCases：已有用例需要调整的，caseId 用上面给出的 id，写清 reason（为什么改）、change（改什么），patch 里给出修改后的字段；必须为目标版本提供 evidence，reqId 和 quote 必须来自改后原文',
     '3. deprecatedCases：因为条款被删除而不再成立的用例，写清 reason',
     '4. notes：其他需要提醒测试同学注意的点',
     '',
@@ -59,7 +59,7 @@ export function buildCompareMessages(params: {
     '【输出 JSON 结构】',
     `{
   "newCases": [ { "title": "", "category": "normal|abnormal|boundary|permission", "priority": "P0|P1|P2", "module": "", "precondition": "", "steps": [""], "expected": [""], "evidence": [{ "reqId": "REQ-00X", "quote": "改后条款的原文片段" }], "assumptions": [] } ],
-  "adjustedCases": [ { "caseId": "case_xxx", "caseTitle": "", "reason": "", "change": "", "patch": { "title": "", "precondition": "", "steps": [""], "expected": [""] } } ],
+  "adjustedCases": [ { "caseId": "case_xxx", "caseTitle": "", "reason": "", "change": "", "patch": { "title": "", "precondition": "", "steps": [""], "expected": [""], "evidence": [{ "reqId": "REQ-00X", "quote": "目标版本条款连续原文" }] } } ],
   "deprecatedCases": [ { "caseId": "case_xxx", "caseTitle": "", "reason": "" } ],
   "notes": [""]
 }`,

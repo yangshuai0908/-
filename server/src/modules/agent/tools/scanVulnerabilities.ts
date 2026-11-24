@@ -63,7 +63,7 @@ reqId 必须来自提供的条款；evidence 为相关条款连续原文，每�
 无可靠建议时 issues 返回 []，不要凑数。不要断言所有建议都必须定为 P1。
 格式：{"summary":"走查结论及局限","issues":[{"reqId":"REQ-001","type":"undefined_edge","findingKind":"needs_clarification","severity":"medium","location":"章节路径","description":"具体待核查项","riskImpact":"可能影响，不能声称已发生","evidence":[{"reqId":"REQ-001","quote":"连续原文"}],"question":"具体澄清问题","defensiveCase":{"title":"候选场景","category":"abnormal","priority":"P1","precondition":"依据明确的前置","steps":["步骤"],"expected":["仅使用已明确的预期"]}}]}` },
       { role: 'user', content: JSON.stringify(input) },
-    ], { label: '需求风险扫描' })
+    ], { label: '需求风险扫描', signal: ctx.signal })
     const scan = saveRiskScan(requirement.id, input, result)
     return {
       artifact: { view: 'insights', requirementId: requirement.id }, changes: ['requirements'],

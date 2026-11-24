@@ -4,6 +4,7 @@ import { type ChatMessage } from '../../llm/client.js'
 import { chatJson, streamChatJson } from '../../llm/json.js'
 import { getSystemPrompt, MAX_AGENT_STEPS } from './prompts.js'
 import { runTool, toolLabels, toolAction } from './tools/index.js'
+import { traceStep } from '../../trace.js'
 import {
   DecisionSchema,
   type AgentAction,
@@ -29,6 +30,7 @@ export interface AgentRunnerOptions {
   workspaceSnapshot?: unknown
   sendEvent: (event: AgentStreamEvent) => void
   isDisconnected: () => boolean
+  signal?: AbortSignal
 }
 
 export async function runAgentLoop({
@@ -38,6 +40,7 @@ export async function runAgentLoop({
   workspaceSnapshot,
   sendEvent,
   isDisconnected,
+  signal = new AbortController().signal,
 }: AgentRunnerOptions): Promise<void> {
   const conversation: ChatMessage[] = [
     { role: 'system', content: getSystemPrompt(role) },
@@ -55,15 +58,20 @@ export async function runAgentLoop({
     if (isDisconnected()) return
 
     let currentDeltas = ''
-    const decision = await streamChatJson(DecisionSchema, conversation, {
+    const traceMessages = conversation.slice(-3).map(message => ({
+      role: message.role,
+      content: message.content.slice(-500),
+    }))
+    const decision = await traceStep(`Agent 第 ${step + 1} 轮决策`, { messageCount: conversation.length, recentMessages: traceMessages }, () => streamChatJson(DecisionSchema, conversation, {
       label: 'TestPilot Agent',
       maxTokens: Math.max(config.maxTokens, 4096),
+      signal,
       onMessageDelta: (delta) => {
         if (isDisconnected()) return
         currentDeltas += delta
         sendEvent({ type: 'delta', delta })
       },
-    })
+    }))
 
     // 模型返回前用户可能已点击停止，不能在断开后继续发起写入。
     if (isDisconnected()) return
@@ -97,8 +105,10 @@ export async function runAgentLoop({
     if (isDisconnected()) return
 
     try {
-      const result = await runTool(decision.tool, decision.args, { ...ctx, role })
+      const result = await traceStep(`执行 Agent 工具：${toolLabel}`, { args: decision.args }, () =>
+        runTool(decision.tool, decision.args, { ...ctx, role, signal }))
       const actionItem = toolAction(decision.tool, result, ctx)
+      actionItem.args = decision.args as Record<string, any>
       if (result.changes?.length) revision++
       stalledSteps = 0
       actions.push(actionItem)
@@ -114,6 +124,7 @@ export async function runAgentLoop({
       const actionItem: AgentAction = {
         tool: decision.tool,
         title: `未完成：${(error as Error).message}`,
+        args: decision.args as Record<string, any>,
         error: (error as Error).message,
         projectId: ctx.projectId,
         requirementId: ctx.currentRequirementId,
@@ -148,7 +159,7 @@ export async function runAgentLoop({
     const final = await chatJson(FinalReplySchema, [
       ...conversation,
       { role: 'system', content: `执行已暂停，原因：${stopReason}\n现在仅汇总，不能调用任何工具，只能返回 {"type":"final","message":"中文 Markdown"}。依据实际工具记录列明已完成、失败及尚未完成的步骤，不虚构保存或完成，不让用户重新描述已明确的目标。不要把执行步数保护说成网络超时或用户输入错误。` },
-    ], { label: 'TestPilot Agent 汇总', maxTokens: Math.max(config.maxTokens, 4096) })
+    ], { label: 'TestPilot Agent 汇总', maxTokens: Math.max(config.maxTokens, 4096), signal })
     finalMsg = `${stopReason}\n\n${final.message}`
   } catch {
     // 已有执行记录足够生成可靠的完成事件，不再让汇总错误掩盖这些成果。

@@ -91,19 +91,8 @@ onMounted(async () => {
     <div v-else class="workspace">
       <aside class="agent-panel"><AgentView /></aside>
       <section class="results" aria-label="需求与测试成果">
-        <!-- 业务生命周期流水线 -->
+        <!-- 业务生命周期流水线导航 -->
         <AppWorkflowStepper />
-
-        <div class="results-heading">
-          <div class="heading-left">
-            <strong>{{ currentRequirement?.label || '未选择需求版本' }}</strong>
-            <span class="heading-desc">{{ currentRequirement ? '当前版本工作成果' : '请先在上方或需求资料中导入需求' }}</span>
-          </div>
-          <div v-if="canvasFocus" class="focus-pill">
-            <span class="focus-type-tag">聚焦</span>
-            <span class="focus-title">{{ canvasFocus.title }}</span>
-          </div>
-        </div>
 
         <n-tabs v-model:value="activeTab" type="line" class="result-tabs" pane-style="padding: 0">
           <n-tab-pane name="requirement" tab="需求资料" display-directive="show:lazy" class="pane-requirement"><RequirementView @refresh="loadRequirements" /></n-tab-pane>
@@ -240,42 +229,6 @@ onMounted(async () => {
   overflow: hidden;
   background: #f8fafc;
 }
-.results-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 15px;
-  padding: 14px 24px 6px;
-  flex-shrink: 0;
-}
-.heading-left strong { font-size: 15px; font-weight: 700; color: #1e293b; }
-.heading-desc { font-size: 12px; color: #64748b; margin-left: 10px; }
-
-.focus-pill {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  padding: 3px 8px;
-  border-radius: 6px;
-  max-width: 45%;
-}
-.focus-type-tag {
-  font-size: 10px;
-  font-weight: 700;
-  color: #1d4ed8;
-  background: #dbeafe;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.focus-title {
-  font-size: 12px;
-  color: #1e40af;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .result-tabs {
   flex: 1;
@@ -320,7 +273,7 @@ onMounted(async () => {
   .brand { min-width: 140px; }
   .project-context :deep(.n-select) { width: 140px; }
   .agent-panel { min-width: 320px; width: 42%; }
-  .result-tabs, .results-heading { padding-inline: 16px; }
+  .result-tabs { padding-inline: 16px; }
 }
 @media(max-width: 768px) {
   .workspace { flex-direction: column; overflow: auto; }

@@ -215,7 +215,7 @@ export interface WorkflowTrace {
   id: string
   requirementId: string
   projectId: string
-  kind: 'analysis' | 'generation' | 'point_edit' | 'case_edit' | 'assessment' | 'recheck'
+  kind: 'analysis' | 'generation' | 'point_edit' | 'case_edit' | 'assessment' | 'recheck' | 'review' | 'compare' | 'agent'
   status: 'running' | 'succeeded' | 'partial' | 'failed' | 'interrupted'
   startedAt: string
   finishedAt?: string
@@ -301,7 +301,7 @@ export interface CompareReport {
       caseTitle: string
       reason: string
       change: string
-      patch?: { title?: string; precondition?: string; steps?: string[]; expected?: string[] }
+      patch?: { title?: string; precondition?: string; steps?: string[]; expected?: string[]; evidence?: { reqId: string; quote: string }[] }
     }[]
     deprecatedCases: { caseId: string; caseTitle: string; reason: string }[]
     notes: string[]

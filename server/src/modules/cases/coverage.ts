@@ -37,8 +37,8 @@ export function buildCoverageReport(requirement: RequirementVersion, cases: Test
     const siblings = plan.scenariosByPoint.get(point.id)!
     const pointCases = casesByPoint.get(point.id) ?? []
     const scenarios: ScenarioCoverage[] = siblings.map(scenario => {
-      const covered = pointCases.filter(c => c.source!.analysisId === analysis.id && c.source!.scenarioId === scenario.id)
-      const stale = pointCases.filter(c => c.source!.analysisId !== analysis.id && c.source!.scenarioId === scenario.id)
+      const covered = pointCases.filter(c => c.source!.analysisId === analysis.id && c.source!.analysisUpdatedAt === analysis.updatedAt && c.source!.scenarioId === scenario.id)
+      const stale = pointCases.filter(c => (c.source!.analysisId !== analysis.id || c.source!.analysisUpdatedAt !== analysis.updatedAt) && c.source!.scenarioId === scenario.id)
       if (covered.length) {
         return { scenarioId: scenario.id, kind: scenario.kind, label: scenario.label, status: 'covered', caseIds: covered.map(c => c.id) }
       }

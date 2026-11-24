@@ -5,6 +5,7 @@ import { runAgentLoop } from './runner.js'
 import { scopedProject, scopedRequirement } from './tools/context.js'
 import { InputSchema, type AgentStreamEvent } from './types.js'
 import { readWorkspaceContext } from './workspace.js'
+import { traceWorkflow } from '../../trace.js'
 
 export const agentRouter = Router()
 
@@ -13,7 +14,7 @@ agentRouter.post('/agent/chat', async (req, res) => {
   if (!parsedInput.success) throw new AppError('Agent 请求格式无效')
   const { projectId, requirementId, role, messages, workspace } = parsedInput.data
   scopedProject(projectId)
-  if (requirementId) scopedRequirement(projectId, requirementId)
+  const requirement = requirementId ? scopedRequirement(projectId, requirementId) : undefined
   const ctx = { projectId, currentRequirementId: requirementId, workspace }
   const workspaceSnapshot = readWorkspaceContext(ctx)
   if (!config.apiKey) throw new AppError('Agent 需要大模型。请在 .env 配置 OPENAI_API_KEY')
@@ -36,21 +37,31 @@ agentRouter.post('/agent/chat', async (req, res) => {
   }
 
   let clientDisconnected = false
+  const controller = new AbortController()
   res.on('close', () => {
     if (!res.writableEnded) {
       clientDisconnected = true
+      controller.abort()
     }
   })
 
   try {
-    await runAgentLoop({
+    const run = () => runAgentLoop({
       ctx,
       workspaceSnapshot,
       messages,
       role,
+      signal: controller.signal,
       sendEvent,
       isDisconnected: () => clientDisconnected || res.writableEnded,
     })
+    if (requirement) await traceWorkflow('agent', requirement, {
+      role,
+      workspace,
+      messageCount: messages.length,
+      latestUserMessage: messages.filter(message => message.role === 'user').at(-1)?.content.slice(-1000) ?? '',
+    }, run)
+    else await run()
     if (!res.writableEnded) {
       res.end()
     }

@@ -129,7 +129,7 @@ ${chunksText}
         { role: 'system', content: '你是一名顶级需求分析师，擅长建立业务正向链路、状态机模型并敏锐捕捉需求盲区。必须输出合法 JSON 格式。' },
         { role: 'user', content: prompt },
       ],
-      { label: '主干链路与状态机剖析' },
+      { label: '主干链路与状态机剖析', signal: ctx.signal },
     )
 
     return {

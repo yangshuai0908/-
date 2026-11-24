@@ -13,6 +13,7 @@ export interface ChatOptions {
   maxTokens?: number
   jsonMode?: boolean
   timeoutMs?: number
+  signal?: AbortSignal
 }
 
 /** 上游返回的错误，带一个「是否值得重试」的标记 */
@@ -63,6 +64,9 @@ function completedContent(content: unknown, finishReason: string, maxTokens: num
 async function requestOnce(opts: ChatOptions): Promise<CompletionResult> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 180_000)
+  const abort = () => controller.abort(opts.signal?.reason)
+  if (opts.signal?.aborted) abort()
+  else opts.signal?.addEventListener('abort', abort, { once: true })
 
   try {
     const res = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -102,12 +106,14 @@ async function requestOnce(opts: ChatOptions): Promise<CompletionResult> {
 
     return { content, finishReason }
   } catch (e) {
+    if (opts.signal?.aborted) throw new AppError('任务已取消', 499)
     if ((e as Error).name === 'AbortError') {
       throw new AppError('模型调用超时（180 秒）。可减少需求范围后重试，或换更快的模型', 504)
     }
     throw e
   } finally {
     clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', abort)
   }
 }
 
@@ -118,6 +124,7 @@ export async function chat(opts: ChatOptions): Promise<string> {
   let lastError: unknown
 
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (opts.signal?.aborted) throw new AppError('任务已取消', 499)
     try {
       const result = await traceStep(`模型接口请求：第 ${attempt + 1} 次尝试`, {
         model: config.model, temperature: opts.temperature ?? config.temperature,
@@ -146,6 +153,9 @@ export async function streamChat(
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 180_000)
+  const abort = () => controller.abort(opts.signal?.reason)
+  if (opts.signal?.aborted) abort()
+  else opts.signal?.addEventListener('abort', abort, { once: true })
 
   try {
     const res = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -215,12 +225,14 @@ export async function streamChat(
     if (!finishReason && !streamEnded) throw new AppError('模型流式响应提前中断，未收到结束标记', 502)
     return completedContent(fullContent, finishReason ?? 'stop', opts.maxTokens ?? config.maxTokens)
   } catch (e) {
+    if (opts.signal?.aborted) throw new AppError('任务已取消', 499)
     if ((e as Error).name === 'AbortError') {
       throw new AppError('模型调用超时（180 秒）', 504)
     }
     throw e
   } finally {
     clearTimeout(timer)
+    opts.signal?.removeEventListener('abort', abort)
   }
 }
 

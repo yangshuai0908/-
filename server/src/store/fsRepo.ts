@@ -13,23 +13,40 @@ function fileOf(col: Collection): string {
 /**
  * 原子写：先写临时文件再 rename，避免中途崩溃把数据写坏。
  *
- * Windows 上 rename 覆盖已存在文件时，如果目标文件正被杀毒/索引服务或残留句柄短暂占用，
- * 会抛 EPERM。这种情况不能直接失败（生成过程中四类场景并行保存，一失败整批就断），
- * 退化为直接覆盖写——本地单用户场景下数据量很小，最坏只会丢一次写入，下次保存会补上。
+ * 临时文件写入或重命名失败时保留旧文件并向调用方报错，不退化为可能截断目标文件的直接覆盖。
+ * Windows 下 rename 覆盖已存在文件时可能偶发遇到 EPERM / EBUSY（杀毒软件扫描、索引或并发读取占用句柄），
+ * 采用短暂重试退避机制，提高文件并发写入稳定性。
  */
 export function writeAtomic(file: string, content: string): void {
   const tmp = `${file}.${process.pid}.${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}.tmp`
-  try {
-    fs.writeFileSync(tmp, content, 'utf8')
-    fs.renameSync(tmp, file)
-  } catch {
+  fs.writeFileSync(tmp, content, 'utf8')
+
+  let lastError: unknown
+  for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      fs.unlinkSync(tmp)
-    } catch {
-      /* 临时文件可能已不存在 */
+      fs.renameSync(tmp, file)
+      return
+    } catch (error: any) {
+      lastError = error
+      if ((error?.code === 'EPERM' || error?.code === 'EBUSY') && attempt < 4) {
+        // 短暂自旋等待句柄释放（25ms ~ 100ms）
+        const waitMs = (attempt + 1) * 25
+        const start = Date.now()
+        while (Date.now() - start < waitMs) {
+          /* wait */
+        }
+      } else {
+        break
+      }
     }
-    fs.writeFileSync(file, content, 'utf8')
   }
+
+  try {
+    fs.unlinkSync(tmp)
+  } catch {
+    /* 临时文件可能已不存在 */
+  }
+  throw lastError
 }
 
 /**

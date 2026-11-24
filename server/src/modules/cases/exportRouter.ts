@@ -82,7 +82,7 @@ function escapeCsv(value: string): string {
 
 export const exportRouter = Router()
 
-exportRouter.get('/requirements/:rid/export', async (req, res) => {
+exportRouter.get(['/requirements/:rid/export', '/requirements/:rid/cases/export'], async (req, res) => {
   const rid = String(req.params.rid)
   const requirement = repo.findById<RequirementVersion>('requirements', rid)
   if (!requirement) throw new AppError('需求版本不存在', 404)

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { activeTab, currentRequirement, cases, selectedAgentResult } from '../stores/workspace'
+import { activeTab, currentRequirement, cases, canvasFocus } from '../stores/workspace'
 import { isHumanConfirmed, type WorkspacePage } from '@testpilot/shared'
 
 interface StepDef {
@@ -87,18 +87,6 @@ const steps = computed<StepDef[]>(() => {
     },
   ]
 
-  if (selectedAgentResult.value?.artifact?.view === 'insights') {
-    const rawTitle = selectedAgentResult.value.title || '模型分析结果'
-    list.push({
-      id: 'insights',
-      number: '✦',
-      title: '分析结果',
-      badgeText: rawTitle.length > 8 ? `${rawTitle.slice(0, 8)}…` : rawTitle,
-      badgeType: 'info',
-      clickable: true,
-    })
-  }
-
   return list
 })
 
@@ -137,6 +125,18 @@ function selectStep(step: StepDef) {
         </div>
       </div>
     </div>
+
+    <!-- 正在查看分析报告胶囊 -->
+    <div v-if="activeTab === 'insights'" class="stepper-focus-pill mode-insights" title="当前正在查看深度分析详情">
+      <span class="focus-type-tag">报告</span>
+      <span class="focus-title">分析结果详情</span>
+    </div>
+
+    <!-- 画布对齐实体微型标签 -->
+    <div v-if="canvasFocus" class="stepper-focus-pill" title="当前画布聚焦对象">
+      <span class="focus-type-tag">聚焦</span>
+      <span class="focus-title">{{ canvasFocus.title }}</span>
+    </div>
   </nav>
 </template>
 
@@ -144,12 +144,41 @@ function selectStep(step: StepDef) {
 .workflow-stepper {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   background: #ffffff;
   border-bottom: 1px solid #e5eaf0;
   padding: 8px 24px;
   user-select: none;
   overflow-x: auto;
   flex-shrink: 0;
+}
+
+.stepper-focus-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  padding: 3px 8px;
+  border-radius: 6px;
+  max-width: 280px;
+  flex-shrink: 0;
+}
+.focus-type-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: #1d4ed8;
+  background: #dbeafe;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.focus-title {
+  font-size: 12px;
+  color: #1e40af;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .stepper-track {

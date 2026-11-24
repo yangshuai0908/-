@@ -160,6 +160,8 @@ requirementsRouter.post('/requirements/:id/analysis/stream', async (req, res) =>
       res.write('data: ' + JSON.stringify(event) + '\n\n')
     }
   }
+  const controller = new AbortController()
+  res.on('close', () => { if (!res.writableEnded) controller.abort() })
   try {
     const parsed = z.object({ replaceAnalysisId: z.string().min(1).optional(), force: z.boolean().optional() }).safeParse(req.body ?? {})
     if (!parsed.success) throw new AppError('需求分析参数不正确')
@@ -169,6 +171,7 @@ requirementsRouter.post('/requirements/:id/analysis/stream', async (req, res) =>
       undefined,
       (evt) => send(evt),
       Boolean(parsed.data.force),
+      controller.signal,
     )
     send({ type: 'finish', analysis })
   } catch (error) {

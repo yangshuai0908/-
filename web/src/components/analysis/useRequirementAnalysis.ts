@@ -10,7 +10,6 @@ import {
   setCanvasFocus,
 } from "../../stores/workspace";
 import {
-  AGENT_ROLES,
   isHumanConfirmed,
   type Category,
   type RequirementAnalysis,
@@ -56,6 +55,7 @@ export function useRequirementAnalysis(
   let confirmation: ReturnType<typeof dialog.warning> | null = null;
 
   const analysisProgress = ref<AnalysisStreamState | null>(null);
+  let analysisController: AbortController | null = null
 
   const showBatchModal = ref(false);
   const batchReviewer = ref("测试员");
@@ -88,11 +88,23 @@ export function useRequirementAnalysis(
         comment: batchOnlyClear.value ? undefined : batchComment.value.trim(),
       });
       writeAnalysis(res.analysis, previousStamp);
-      message.success(
-        batchOnlyClear.value
-          ? `已批量确认 ${res.confirmedCount} 个无疑问测试点；带待澄清问题的测试点需逐项填写澄清结论。`
-          : `已批量确认 ${res.confirmedCount} 个测试点（含带疑问点，已记录统一澄清结论）。`,
-      );
+      if (res.confirmedCount > 0) {
+        message.success(
+          batchOnlyClear.value
+            ? `已批量确认 ${res.confirmedCount} 个无疑问测试点${res.skippedQuestionsCount ? `（另有 ${res.skippedQuestionsCount} 个待澄清点已保留）` : ''}。`
+            : `已批量确认 ${res.confirmedCount} 个测试点（含带疑问点，已记录统一澄清结论）。`,
+        );
+      } else if ((res.skippedQuestionsCount ?? 0) > 0) {
+        message.warning(
+          `未能确认测试点：当前 ${res.skippedQuestionsCount} 个测试点均存在待澄清疑问。请取消勾选「仅确认无疑问测试点」并填写澄清批注，或在测试点抽屉中单独澄清。`,
+        );
+      } else if ((res.skippedUnmatchedCount ?? 0) > 0) {
+        message.warning(
+          `未能确认测试点：当前 ${res.skippedUnmatchedCount} 个测试点的需求依据在原文中未匹配。`,
+        );
+      } else {
+        message.info("当前没有需要确认的待处理测试点。");
+      }
       showBatchModal.value = false;
       bumpRequirements();
     } catch (err) {
@@ -184,6 +196,8 @@ export function useRequirementAnalysis(
     }
     const previousStamp = stamp(analysis.value);
     pendingRequests.set(requirementId, "analyze");
+    const controller = new AbortController()
+    analysisController = controller
     error.value = "";
     const totalChunks = props.requirement.chunks.length;
     const initialBatches = Math.max(1, Math.ceil(totalChunks / 3));
@@ -210,6 +224,7 @@ export function useRequirementAnalysis(
             analysisProgress.value.logs.push(`[${new Date().toLocaleTimeString()}] ${evt.message}`);
           }
         },
+        controller.signal,
       );
       const applied = writeAnalysis(result, previousStamp);
       if (active) {
@@ -223,13 +238,16 @@ export function useRequirementAnalysis(
       }
     } catch (e) {
       // 不清空旧结果，重分析失败仍可查看此前的人工核对内容。
-      const detail = `分析失败：${errorText(e)}`;
+      const detail = controller.signal.aborted ? "分析已停止，原有分析结果保持不变。" : `分析失败：${errorText(e)}`;
       if (active) error.value = detail;
-      else message.error(`「${versionLabel}」${detail}`);
+      else if (!controller.signal.aborted) message.error(`「${versionLabel}」${detail}`);
     } finally {
+      if (analysisController === controller) analysisController = null
       pendingRequests.delete(requirementId);
     }
   }
+
+  function cancelAnalysis() { analysisController?.abort() }
 
   function requestAnalysis() {
     if (busy.value || draft.value || confirmation) return;
@@ -429,11 +447,11 @@ export function useRequirementAnalysis(
     const questionsList = (section.questions || [])
       .map((q: string, i: number) => `${i + 1}. ${q}`)
       .join("\n");
-    const prompt = `在需求条款【${section.sectionPath || section.reqId}】中发现了以下待确认问题：\n${questionsList}\n\n该条款原文如下：\n"""\n${clauseText.slice(0, 800)}\n"""\n\n请由需求分析师指出原文已明确和仍然缺失的规则，整理向需求方确认的问题；不提供默认业务规则，不生成或修改用例。`;
+    const prompt = `在需求条款【${section.sectionPath || section.reqId}】中发现了以下待确认问题：\n${questionsList}\n\n该条款原文如下：\n"""\n${clauseText.slice(0, 800)}\n"""\n\n请指出原文已明确和仍然缺失的规则，整理向需求方确认的问题；不提供默认业务规则，不生成或修改用例。`;
     sendToAgent({
       prompt,
       autoSend: true,
-      role: "analyst",
+      role: "team",
       source: "requirement-question",
     });
   }
@@ -446,7 +464,7 @@ export function useRequirementAnalysis(
     sendToAgent({
       prompt,
       autoSend: true,
-      role: "analyst",
+      role: "team",
       source: "point-question",
     });
   }
@@ -464,25 +482,16 @@ export function useRequirementAnalysis(
   function consultPoint(point: TestPoint, section: { reqId: string; sectionPath?: string }) {
     focusPoint(point, section);
     sendToAgent({
-      prompt: AGENT_ROLES.analyst.label + '：核对测试点【' + point.title + '】（条款 ' + section.reqId + '；验证目标：' + point.objective + '）的原文支持、适用条件及缺失规则。只给出测试点修订建议和具体澄清问题，不生成用例，不修改人工确认状态，不将默认做法当作业务规则。',
-      role: "analyst", autoSend: true, source: "point-analysis",
+      prompt: '核对测试点【' + point.title + '】（条款 ' + section.reqId + '；验证目标：' + point.objective + '）的原文支持、适用条件及缺失规则。只给出测试点修订建议和具体澄清问题，不生成用例，不修改人工确认状态，不将默认做法当作业务规则。',
+      role: "team", autoSend: true, source: "point-analysis",
       focus: { type: "point", id: point.id, title: point.title, subtitle: point.objective },
-    });
-  }
-
-  function analyzePathwaysWithAgent() {
-    sendToAgent({
-      prompt: `请作为【需求分析师】，对我当前的需求「${props.requirement.label}」(ID: "${props.requirement.id}") 调用 analyze_pathways 工具(传入 requirementId: "${props.requirement.id}")，深度剖析核心端到端正向业务闭环（Happy Path）、系统状态机流转关系以及隐式未明确的业务规则与接口契约盲区。`,
-      role: "analyst",
-      autoSend: true,
-      source: "analyst-pathways",
     });
   }
 
   function scanVulnerabilitiesWithAgent() {
     sendToAgent({
-      prompt: `请作为【需求分析师】，对我当前的需求「${props.requirement.label}」(ID: "${props.requirement.id}") 调用 scan_vulnerabilities 工具(传入 requirementId: "${props.requirement.id}")，深度排查其中的规则矛盾、未定义边界、并发时序死锁与安全隐患，并输出针对性的防御测试用例建议。`,
-      role: "analyst",
+      prompt: `请对我当前的需求「${props.requirement.label}」(ID: "${props.requirement.id}") 调用 scan_vulnerabilities 工具(传入 requirementId: "${props.requirement.id}")，深度排查其中的规则矛盾、未定义边界、并发时序死锁与安全隐患，并输出针对性的防御测试用例建议。`,
+      role: "team",
       autoSend: true,
       source: "vulnerability-scan",
     });
@@ -497,6 +506,7 @@ export function useRequirementAnalysis(
   });
 
   onBeforeUnmount(() => {
+    cancelAnalysis()
     active = false;
     draft.value = null;
     confirmation?.destroy();
@@ -525,6 +535,7 @@ export function useRequirementAnalysis(
     pointTotal,
     loadAnalysis,
     requestAnalysis,
+    cancelAnalysis,
     openEditor,
     closeEditor,
     savePoint,
@@ -534,7 +545,6 @@ export function useRequirementAnalysis(
     askAgentForPointQuestions,
     focusPoint,
     consultPoint,
-    analyzePathwaysWithAgent,
     scanVulnerabilitiesWithAgent,
   };
 }

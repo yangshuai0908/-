@@ -8,7 +8,7 @@ export const addCaseTool = {
   async execute(args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
     const requirement = scopedRequirement(ctx.projectId, args.requirementId ?? ctx.currentRequirementId)
     const input = Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null && value !== undefined))
-    const item = await createCase(requirement, input, 'agent')
+    const item = await createCase(requirement, input, 'agent', undefined, ctx.signal)
     return { title: `已保存用例「${item.title}」`, data: { case: item, caseId: item.id }, changes: ['cases'],
       artifact: { view: 'cases', requirementId: requirement.id, caseId: item.id } }
   },

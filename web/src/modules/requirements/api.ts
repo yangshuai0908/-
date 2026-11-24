@@ -62,7 +62,12 @@ export function createRequirementsApi(request: <T>(url: string, init?: RequestIn
       id: string,
       payload: { reviewer: string; onlyClear?: boolean; comment?: string },
     ) =>
-      request<{ analysis: RequirementAnalysis; confirmedCount: number }>(
+      request<{
+        analysis: RequirementAnalysis
+        confirmedCount: number
+        skippedQuestionsCount?: number
+        skippedUnmatchedCount?: number
+      }>(
         `/api/requirements/${id}/analysis/batch-confirm`,
         {
           method: 'POST',

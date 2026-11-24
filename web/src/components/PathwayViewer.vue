@@ -44,10 +44,10 @@ function generateCaseFromHappyPath(flow: { name: string; steps: string[] }) {
 步骤顺序：
 ${stepsList}
 
-请由需求分析师核对路径的原文依据，给出候选测试点及待澄清问题。只给出建议，不新增用例或代替人工确认。`;
+请核对路径的原文依据，给出候选测试点及待澄清问题。只给出建议，不新增用例或代替人工确认。`;
   sendToAgent({
     prompt,
-    role: "analyst",
+    role: "team",
     autoSend: true,
   });
 }
@@ -58,14 +58,14 @@ function attackStateTransition(item: {
   trigger: string;
   result: string;
 }) {
-  const prompt = `请作为【需求分析师】，针对状态机流转：
+  const prompt = `针对状态机流转：
 【${item.fromState}】 ──( ${item.trigger} )──> 【${item.toState}】（结果：${item.result}）
 核对流转规则和异常分支：
 1. 分析是否存在并发竞争、死锁绕过、条件失效或逆向回退攻击面；
 2. 输出带原文依据的候选测试点和待澄清问题，不生成用例或自行补写规则。`;
   sendToAgent({
     prompt,
-    role: "analyst",
+    role: "team",
     autoSend: true,
   });
 }
@@ -77,10 +77,10 @@ function organizeClarificationDoc() {
         `### ${b.category}\n${b.issues.map((issue, idx) => `${idx + 1}. ${issue}`).join("\n")}`
     )
     .join("\n\n");
-  const prompt = `请作为【需求分析师】，将以下梳理出的 ${totalIssues.value} 项隐式规则与契约盲区，整理为一份专业规范的《产品需求与接口契约澄清确认单》供研发和产品评审签字：\n\n${allIssues}`;
+  const prompt = `请将以下梳理出的 ${totalIssues.value} 项隐式规则与契约盲区，整理为一份专业规范的《产品需求与接口契约澄清确认单》供研发和产品评审签字：\n\n${allIssues}`;
   sendToAgent({
     prompt,
-    role: "analyst",
+    role: "team",
     autoSend: true,
   });
 }
@@ -91,7 +91,7 @@ function organizeClarificationDoc() {
     <!-- 顶栏标题与摘要 -->
     <div class="pv-header">
       <div class="pv-title-row">
-        <span class="pv-role-badge">需求分析师 · 路径分析</span>
+        <span class="pv-role-badge">路径分析</span>
         <strong class="pv-main-title">业务主干闭环与状态机图谱</strong>
         <n-tag v-if="data.requirementLabel" size="tiny" :bordered="false" round type="info">
           {{ data.requirementLabel }}
@@ -143,7 +143,7 @@ function organizeClarificationDoc() {
           <button
             type="button"
             class="flow-to-case-btn"
-            title="需求分析师：核对路径并给出候选测试点建议"
+            title="核对路径并给出候选测试点建议"
             @click="generateCaseFromHappyPath(flow)"
           >
             提炼测试点建议
@@ -205,7 +205,7 @@ function organizeClarificationDoc() {
             <button
               type="button"
               class="state-attack-btn"
-              title="需求分析师：核对状态流转和异常规则"
+              title="核对状态流转和异常规则"
               @click="attackStateTransition(st)"
             >
               核对流转规则

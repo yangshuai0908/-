@@ -47,6 +47,7 @@ const {
   pointTotal,
   loadAnalysis,
   requestAnalysis,
+  cancelAnalysis,
   openEditor,
   closeEditor,
   savePoint,
@@ -56,7 +57,6 @@ const {
   askAgentForPointQuestions,
   focusPoint,
   consultPoint,
-  analyzePathwaysWithAgent,
   scanVulnerabilitiesWithAgent,
 } = useRequirementAnalysis(props, (evt) => emit(evt), dialog, message);
 </script>
@@ -74,12 +74,12 @@ const {
       :version-label="requirement.label"
       :point-total="pointTotal"
       @request-analysis="requestAnalysis"
+      @cancel-analysis="cancelAnalysis"
       @scan-vulnerabilities="scanVulnerabilitiesWithAgent"
-      @analyze-pathways="analyzePathwaysWithAgent"
     />
 
     <div class="head-note text-dim small-text">
-      需求分析师负责提炼测试点和待澄清问题，由你确认后进入用例生成。
+      AI 助手辅助提炼测试点和待澄清问题，经人工核对确认后即可开展用例生成。
     </div>
 
     <n-alert v-if="riskQuestions.length" type="warning" :show-icon="false" class="notice">

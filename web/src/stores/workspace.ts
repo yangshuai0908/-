@@ -1,7 +1,7 @@
 import { computed, ref, watch } from 'vue'
 import type { Project, RequirementVersion, TestCase } from '../types'
 import type { AgentAction, AgentWorkspaceContext, WorkspacePage } from '@testpilot/shared'
-import type { AgentRole } from '../api/client'
+import { api, type AgentRole } from '../api/client'
 
 /** 模块级 ref 单例：所有视图共享同一份工作区状态 */
 export const activeTab = ref<WorkspacePage>('requirement')
@@ -124,6 +124,31 @@ export const casesRevision = ref(0)
 export function bumpCases(): void {
   casesRevision.value++
 }
+
+let casesFetchId = 0
+export async function loadWorkspaceCases(requirementId?: string | null): Promise<void> {
+  const reqId = requirementId ?? currentRequirementId.value
+  const fetchId = ++casesFetchId
+  if (!reqId) {
+    cases.value = []
+    return
+  }
+  try {
+    const list = await api.listCases(reqId)
+    if (fetchId === casesFetchId && currentRequirementId.value === reqId) {
+      cases.value = list
+    }
+  } catch {
+    // 忽略加载错误
+  }
+}
+
+watch(currentRequirementId, (id) => {
+  void loadWorkspaceCases(id)
+})
+watch(casesRevision, () => {
+  void loadWorkspaceCases(currentRequirementId.value)
+})
 
 export const requirementsRevision = ref(0)
 export function bumpRequirements(): void {

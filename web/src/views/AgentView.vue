@@ -27,7 +27,6 @@ import {
   openAgentArtifact,
   setCanvasFocus,
 } from "../stores/workspace";
-import { AGENT_ROLE_IDS, AGENT_ROLES, isHumanConfirmed } from "../types";
 
 const message = useMessage();
 const history = ref(createHistory());
@@ -57,10 +56,6 @@ const conversation = ref<HTMLElement | null>(null);
 let controller: AbortController | null = null;
 let disposed = false;
 const key = (id: string) => `tp_agent_turns_${id}`;
-const contextLabel = computed(
-  () => currentRequirement.value?.label || "选择或导入需求后开始",
-);
-
 interface ActionChip {
   icon: string;
   label: string;
@@ -74,80 +69,33 @@ const suggestions = computed<ActionChip[]>(() => {
     return [
       {
         icon: "📋",
-        label: "项目概览",
+        label: "项目全貌概览",
         prompt: "概览当前项目的需求版本与测试覆盖情况",
-        role: "team",
       },
     ];
   }
-  if (!requirement.analysis) {
-    return [
-      {
-        icon: "🧠",
-        label: "分析需求并提炼测试点",
-        prompt: "深入分析当前需求文档，自动拆解测试点与待确认问题",
-        role: "analyst",
-      },
-      {
-        icon: "🛣️",
-        label: "梳理业务主路径",
-        prompt: "梳理当前需求的主干业务路径与状态流转拓扑",
-        role: "analyst",
-      },
-    ];
-  }
-
-  const confirmed = requirement.analysis.sections
-    .flatMap((section) => section.points)
-    .filter(isHumanConfirmed);
-  return confirmed.length
-    ? [
-        {
-          icon: "⚡",
-          label: "按已确认测试点生成用例",
-          prompt: "按已确认测试点生成测试用例",
-          role: "qa_expert",
-        },
-        {
-          icon: "📊",
-          label: "检查用例覆盖与质量",
-          prompt: "检查已有测试用例对条款的覆盖情况，识别盲区",
-          role: "reviewer",
-        },
-      ]
-    : [
-        {
-          icon: "📋",
-          label: "核对待确认测试点",
-          prompt: "解释需求中的待澄清问题，协助我人工核对测试点",
-          role: "analyst",
-        },
-        {
-          icon: "🛡️",
-          label: "排查需求风险",
-          prompt: "走查需求中的规则矛盾、时序与并发隐患等深层风险",
-          role: "analyst",
-        },
-      ];
-});
-
-const contextualChips = computed<ActionChip[]>(() => {
-  const focus = canvasFocus.value;
-  if (focus) {
-    if (focus.type === "chunk") {
-      return [];
-    }
-    if (focus.type === "point") {
-      return [{ icon: AGENT_ROLES.analyst.icon, label: '核对测试点', prompt: '请核对当前选中测试点的原文依据、验证条件和待澄清问题，只给出建议，不生成用例或代替人工确认。', role: 'analyst' }];
-    }
-    if (focus.type === "case") {
-      return [
-        { icon: AGENT_ROLES.reviewer.icon, label: '检查用例', prompt: '检查当前选中用例的原文依据、步骤和预期，只给出问题与修改建议，不修改用例。', role: 'reviewer' },
-        { icon: AGENT_ROLES.qa_expert.icon, label: '优化用例', prompt: '基于需求原文优化当前选中用例的步骤和预期，使用 update_case 保存；保持验证目标，缺失规则先澄清，不新增用例。', role: 'qa_expert' },
-      ];
-    }
-  }
-  return suggestions.value;
+  return [
+    {
+      icon: "🛡️",
+      label: "排查深层隐患与规则矛盾",
+      prompt: "全面走查当前需求中的规则矛盾、时序与并发隐患等深层风险，产出待核对建议",
+    },
+    {
+      icon: "📊",
+      label: "核对条款引用与质量覆盖",
+      prompt: "检查已有测试用例对条款的覆盖情况，识别盲区并执行质量审查",
+    },
+    {
+      icon: "📋",
+      label: "梳理待核对测试点与疑问",
+      prompt: "整理需求中的待澄清问题，协助我人工核对候选测试点",
+    },
+    {
+      icon: "⚡",
+      label: "按已确认测试点生成用例",
+      prompt: "按已确认测试点生成测试用例",
+    },
+  ];
 });
 
 function executeSuggestedTask(chip: ActionChip) {
@@ -160,6 +108,65 @@ function focusTypeLabel(type: string): string {
   if (type === "point") return "测试点";
   if (type === "case") return "用例";
   return "对象";
+}
+
+const TOOL_INFO: Record<string, { label: string; icon: string }> = {
+  project_overview: { label: "项目概况", icon: "📋" },
+  read_requirement: { label: "读取条款", icon: "📖" },
+  analyze_requirement: { label: "需求分析", icon: "🧭" },
+  search_cases: { label: "检索用例", icon: "🔍" },
+  check_coverage: { label: "核算覆盖率", icon: "📊" },
+  compare_versions: { label: "版本对比", icon: "🔄" },
+  generate_cases: { label: "生成用例", icon: "⚡" },
+  review_cases: { label: "质量评审", icon: "🛡️" },
+  update_case: { label: "更新用例", icon: "✏️" },
+  add_case: { label: "新增用例", icon: "➕" },
+  batch_confirm_points: { label: "批量确认", icon: "✓" },
+  scan_vulnerabilities: { label: "风险走查", icon: "🛡️" },
+  analyze_pathways: { label: "路径分析", icon: "🗺️" },
+};
+
+function toolMeta(tool: string) {
+  return TOOL_INFO[tool] || { label: tool, icon: "⚙️" };
+}
+
+function formatArgs(args?: Record<string, any>): string {
+  if (!args || !Object.keys(args).length) return "";
+  return Object.entries(args)
+    .filter(([_, v]) => v != null && v !== "")
+    .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+    .join(" · ");
+}
+
+function summarizeResult(action: AgentAction): string {
+  if (action.error) return action.error;
+  const d = action.data;
+  if (!d) return "";
+  if (action.tool === "search_cases") {
+    return Array.isArray(d.cases) ? `已检索到 ${d.cases.length} 条用例` : "";
+  }
+  if (action.tool === "check_coverage") {
+    return `引用覆盖率 ${Math.round((d.rate || 0) * 100)}% · 缺口 ${d.uncoveredCount ?? (d.uncovered?.length || 0)} 条`;
+  }
+  if (action.tool === "review_cases") {
+    return `评分 ${d.scores?.total ?? 0}/5 · 缺口 ${d.gaps?.length || 0} 处 · 疑似重复 ${d.duplicates?.length || 0} 组`;
+  }
+  if (action.tool === "scan_vulnerabilities") {
+    return `排查出 ${d.issues?.length || 0} 项潜在风险与盲区建议`;
+  }
+  if (action.tool === "compare_versions") {
+    return `变更条款 ${d.stats?.modified ?? 0} 处 · 建议新增用例 ${d.results?.newCases?.length || 0} 条`;
+  }
+  if (action.tool === "read_requirement") {
+    return `已读取条款 ${d.reqId || ""} (${d.sectionPath || ""})`;
+  }
+  if (action.tool === "update_case") {
+    return `用例【${d.title || d.id}】已按依据更新保存`;
+  }
+  if (action.tool === "add_case") {
+    return `用例【${d.title || d.id}】已保存`;
+  }
+  return "";
 }
 
 function persist(projectId = currentProjectId.value, value = history.value) {
@@ -315,54 +322,30 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="agent-workspace" aria-label="测试设计 Agent">
+  <section class="agent-workspace" aria-label="测试用例 Copilot">
     <header class="agent-header">
-      <div class="header-left">
-        <h1>测试用例助手</h1>
+      <div class="header-brand">
+        <span class="brand-dot" />
+        <span class="brand-title">测试 Copilot</span>
+        <span v-if="session.turns.length" class="turn-count-tag">
+          {{ session.turns.filter((turn) => turn.role === "user").length }} 轮对话
+        </span>
       </div>
       <button
         class="new-chat-btn"
         :disabled="pending || !currentProjectId"
+        title="清空对话，开启新任务"
         @click="newChat"
       >
         + 新对话
       </button>
     </header>
 
-    <div class="context">
-      <div class="context-req">
-        <span class="context-icon">📄</span>
-        <span class="context-text" :title="contextLabel">{{
-          contextLabel
-        }}</span>
-      </div>
-      <select
-        v-if="currentProjectId"
-        aria-label="对话记录"
-        class="session-select"
-        :value="history.activeId"
-        :disabled="pending"
-        @change="switchSession(($event.target as HTMLSelectElement).value)"
-      >
-        <option
-          v-for="item in history.sessions"
-          :key="item.id"
-          :value="item.id"
-        >
-          {{
-            item.turns
-              .find((turn) => turn.role === "user")
-              ?.content.slice(0, 24) || "新对话"
-          }}
-        </option>
-      </select>
-    </div>
-
     <div ref="conversation" class="conversation" aria-live="polite">
       <div v-if="!session.turns.length" class="welcome">
         <div class="welcome-icon">✨</div>
-        <h2>现在可以继续这项工作</h2>
-        <p>点选推荐任务即可执行。需要调整范围或说明细节时，再在下方输入。</p>
+        <h2>TestPilot 智能协作</h2>
+        <p>支持深度风险排查、盲区质检、用例优化与自由问答。点选推荐任务或在下方直接指派。</p>
         <div class="welcome-chips">
           <button
             v-for="item in suggestions"
@@ -386,11 +369,6 @@ onBeforeUnmount(() => {
         <div class="turn-meta">
           <template v-if="turn.role === 'user'">
             <span class="turn-label">我</span>
-            <div class="turn-avatar user-avatar" title="当前操作者">
-              <svg viewBox="0 0 20 20" width="12" height="12" fill="currentColor">
-                <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd" />
-              </svg>
-            </div>
           </template>
           <template v-else>
             <div class="turn-avatar assistant-avatar" title="TestPilot 智能助手">
@@ -399,14 +377,6 @@ onBeforeUnmount(() => {
               </svg>
             </div>
             <span class="turn-label">TestPilot Copilot</span>
-            <span
-              v-if="turn.roleType"
-              class="role-tag"
-              :title="`工作角色：${AGENT_ROLES[turn.roleType]?.label || turn.roleType}`"
-            >
-              <span class="role-tag-icon">{{ AGENT_ROLES[turn.roleType]?.icon || '🤖' }}</span>
-              <span>{{ AGENT_ROLES[turn.roleType]?.label || turn.roleType }}</span>
-            </span>
           </template>
         </div>
 
@@ -424,7 +394,10 @@ onBeforeUnmount(() => {
           >
             <span v-if="turn.streaming" class="status-spinner" />
             <span v-else class="status-icon">⏹</span>
-            <span>{{ turn.status }}</span>
+            <span class="status-text">{{ turn.status }}</span>
+            <span v-if="turn.streaming && turn.actions?.length" class="status-step-badge">
+              第 {{ turn.actions.length + 1 }} 步
+            </span>
           </div>
 
           <div
@@ -434,21 +407,39 @@ onBeforeUnmount(() => {
             :class="{ failed: action.error }"
           >
             <div class="action-header">
-              <span class="action-tag">{{
-                action.error ? "执行异常" : "工具调用"
-              }}</span>
+              <span class="action-tag">
+                <span class="action-icon">{{ toolMeta(action.tool).icon }}</span>
+                {{ action.error ? "执行异常" : toolMeta(action.tool).label }}
+              </span>
               <strong class="action-title">{{ action.title }}</strong>
+              <button
+                v-if="action.artifact && !action.error"
+                class="action-open-btn"
+                @click="openAgentArtifact(action)"
+              >
+                {{ action.tool === 'scan_vulnerabilities' ? '核对建议 ↗' : '打开成果 ↗' }}
+              </button>
             </div>
-            <button
-              v-if="action.artifact && !action.error"
-              class="action-open-btn"
-              @click="openAgentArtifact(action)"
-            >
-              {{ action.tool === 'scan_vulnerabilities' ? '核对并处理建议 ↗' : '打开对应成果 ↗' }}
-            </button>
-            <details v-if="action.data" class="action-details">
-              <summary>查看执行返回数据</summary>
-              <pre>{{ JSON.stringify(action.data, null, 2) }}</pre>
+
+            <!-- 可折叠的工具入参与执行结果细节 -->
+            <details v-if="action.args || summarizeResult(action)" class="action-details-panel">
+              <summary class="details-summary">
+                <span class="summary-toggle-icon">▸</span>
+                <span class="summary-title">参数与细节</span>
+                <span v-if="action.args && Object.keys(action.args).length" class="summary-args-badge" :title="formatArgs(action.args)">
+                  {{ formatArgs(action.args) }}
+                </span>
+              </summary>
+              <div class="details-body">
+                <div v-if="action.args && Object.keys(action.args).length" class="detail-row">
+                  <span class="detail-label">传入参数</span>
+                  <pre class="detail-code">{{ JSON.stringify(action.args, null, 2) }}</pre>
+                </div>
+                <div v-if="summarizeResult(action)" class="detail-row">
+                  <span class="detail-label">执行结论</span>
+                  <span class="detail-value">{{ summarizeResult(action) }}</span>
+                </div>
+              </div>
             </details>
           </div>
         </div>
@@ -456,23 +447,6 @@ onBeforeUnmount(() => {
     </div>
 
     <footer class="composer">
-      <!-- 动态上下文快捷指令胶囊 -->
-      <div v-if="contextualChips.length" class="chips-container">
-        <span class="chips-hint">针对当前选择 · 点击直接执行</span>
-        <div class="chips-list">
-          <button
-            v-for="(chip, idx) in contextualChips"
-            :key="idx"
-            class="chip-capsule"
-            :disabled="pending || !currentProjectId"
-            @click="executeSuggestedTask(chip)"
-          >
-            <span class="chip-icon">{{ chip.icon }}</span>
-            <span class="chip-label">{{ chip.label }}</span>
-          </button>
-        </div>
-      </div>
-
       <p v-if="error" class="error-msg" role="alert">{{ error }}</p>
 
       <!-- ChatGPT 风格胶囊输入卡片 -->
@@ -520,21 +494,9 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <!-- 胶囊底栏：侧重模式胶囊 + ChatGPT 圆形发送/停止按钮 -->
+        <!-- 胶囊底栏：提示 + 发送/停止按钮 -->
         <div class="capsule-bottom-bar">
-          <div class="role-capsule" :title="`当前角色：${AGENT_ROLES[role].label}（点击切换）`">
-            <span class="role-icon">{{ AGENT_ROLES[role].icon }}</span>
-            <span class="role-name">{{ AGENT_ROLES[role].label }}</span>
-            <span class="role-chevron">▾</span>
-            <select
-              v-model="role"
-              aria-label="工作角色"
-              :disabled="pending"
-              class="role-select"
-            >
-              <option v-for="id in AGENT_ROLE_IDS" :key="id" :value="id">{{ AGENT_ROLES[id].label }}</option>
-            </select>
-          </div>
+          <span class="capsule-hint">Enter 发送 · Shift+Enter 换行</span>
 
           <div class="capsule-actions-right">
             <button
@@ -563,10 +525,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
-
-      <div class="composer-footer">
-        <small>{{ AGENT_ROLES[role].description }}</small>
-      </div>
     </footer>
   </section>
 </template>
@@ -584,67 +542,55 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 22px 14px;
+  padding: 12px 18px;
   border-bottom: 1px solid #f1f5f9;
+  background: #ffffff;
+  flex-shrink: 0;
 }
-h1 {
-  font-size: 17px;
-  margin: 2px 0 0;
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 0 2px #d1fae5;
+}
+.brand-title {
+  font-size: 14px;
   font-weight: 700;
   color: #0f172a;
+  letter-spacing: -0.01em;
+}
+.turn-count-tag {
+  font-size: 11px;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 9999px;
+  padding: 1px 7px;
+  font-weight: 500;
 }
 .new-chat-btn {
-  font-size: 12px;
-  color: #3b82f6;
+  font-size: 11px;
+  color: #2563eb;
   background: #eff6ff;
-  border: 1px solid #bfdbfe;
+  border: 1px solid #dbeafe;
   border-radius: 6px;
-  padding: 5px 11px;
+  padding: 4px 9px;
   cursor: pointer;
   font-weight: 500;
   transition: all 0.15s ease;
 }
 .new-chat-btn:hover:not(:disabled) {
   background: #dbeafe;
+  border-color: #bfdbfe;
 }
 .new-chat-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-
-.context {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 22px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-  font-size: 12px;
-  gap: 12px;
-  color: #64748b;
-}
-.context-req {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.context-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 500;
-  color: #334155;
-}
-.session-select {
-  max-width: 50%;
-  font: inherit;
-  font-size: 12px;
-  color: #475569;
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 4px 8px;
 }
 
 .conversation {
@@ -725,48 +671,32 @@ h1 {
 .turn.user {
   align-items: flex-end;
   margin-left: auto;
-  max-width: 88%;
+  max-width: 90%;
 }
 .turn.user .turn-meta {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .turn.user .turn-label {
-  color: #2563eb;
-  font-size: 12px;
-  font-weight: 600;
-}
-.user-avatar {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: #eff6ff;
-  color: #2563eb;
-  border: 1px solid #bfdbfe;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 500;
 }
 .user-content {
-  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-  color: #ffffff;
-  border-radius: 16px 3px 16px 16px;
-  padding: 10px 14px;
+  background: #f1f5f9;
+  color: #0f172a;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px 2px 12px 12px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
   max-width: 100%;
   width: fit-content;
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.18);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.user-content ::selection {
-  background: rgba(255, 255, 255, 0.35);
-  color: #ffffff;
 }
 
 /* --- 模型消息（居左） --- */
@@ -877,14 +807,21 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .action-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   font-weight: 600;
   background: #e2e8f0;
   color: #475569;
-  padding: 1px 5px;
-  border-radius: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.action-icon {
+  font-size: 11px;
 }
 .action-result.failed .action-tag {
   background: #fee2e2;
@@ -894,36 +831,120 @@ h1 {
   font-size: 12px;
   font-weight: 600;
   color: #1e293b;
+  flex: 1;
+  min-width: 120px;
 }
 .action-open-btn {
-  align-self: flex-start;
+  margin-left: auto;
   font-size: 11px;
   font-weight: 600;
   color: #2563eb;
   background: #eff6ff;
   border: 1px solid #bfdbfe;
   border-radius: 4px;
-  padding: 3px 8px;
+  padding: 2px 8px;
   cursor: pointer;
-  margin-top: 2px;
+  white-space: nowrap;
 }
 .action-open-btn:hover {
   background: #dbeafe;
 }
-.action-details {
+
+/* 细节折叠面板 */
+.action-details-panel {
+  margin-top: 4px;
+  border-top: 1px dashed #e2e8f0;
+  padding-top: 6px;
+}
+.details-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
   font-size: 11px;
   color: #64748b;
-  margin-top: 4px;
+  user-select: none;
+  list-style: none;
 }
-.action-details pre {
+.details-summary::-webkit-details-marker {
+  display: none;
+}
+.summary-toggle-icon {
+  font-size: 10px;
+  display: inline-block;
+  transition: transform 0.2s ease;
+  color: #94a3b8;
+}
+.action-details-panel[open] .summary-toggle-icon {
+  transform: rotate(90deg);
+}
+.summary-title {
+  font-weight: 500;
+  color: #475569;
+}
+.summary-args-badge {
+  font-size: 10px;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 1px 6px;
+  border-radius: 3px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.details-body {
   margin-top: 6px;
-  padding: 8px;
+  padding: 8px 10px;
+  background: #f1f5f9;
+  border-radius: 6px;
+  font-size: 11px;
+  display: grid;
+  gap: 6px;
+}
+.detail-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.detail-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.detail-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  max-height: 180px;
-  overflow: auto;
-  font-family: ui-monospace, monospace;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 140px;
+  overflow-y: auto;
+  margin: 0;
+}
+.detail-value {
+  color: #1e293b;
+  line-height: 1.5;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  padding: 5px 8px;
+  border-radius: 4px;
+}
+.status-step-badge {
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+  margin-left: 4px;
 }
 
 .composer {
@@ -931,59 +952,6 @@ h1 {
   border-top: 1px solid #f1f5f9;
   background: #ffffff;
   flex-shrink: 0;
-}
-
-/* 顶部上下文快捷指令 - ChatGPT 药丸胶囊 */
-.chips-container {
-  margin-bottom: 8px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.chips-hint {
-  display: block;
-  margin: 0 0 4px 2px;
-  color: #94a3b8;
-  font-size: 10px;
-}
-.chips-container::-webkit-scrollbar {
-  display: none;
-}
-.chips-list {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: max-content;
-  padding: 2px 0;
-}
-.chip-capsule {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 9999px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #334155;
-  cursor: pointer;
-  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
-  white-space: nowrap;
-}
-.chip-capsule:hover:not(:disabled) {
-  background: #eff6ff;
-  border-color: #93c5fd;
-  color: #1d4ed8;
-  transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.08);
-}
-.chip-capsule:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.chip-icon {
-  font-size: 12px;
 }
 
 .error-msg {
@@ -1090,49 +1058,12 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-top: 2px;
+  padding-top: 4px;
 }
-
-/* 侧重模式胶囊 (ChatGPT 模式切换风格) */
-.role-capsule {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 9999px;
-  padding: 3px 9px;
+.capsule-hint {
   font-size: 11px;
-  color: #475569;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
-}
-.role-capsule:hover {
-  background: #f8fafc;
-  border-color: #cbd5e1;
-  color: #1e293b;
-}
-.role-icon {
-  font-size: 11px;
-}
-.role-name {
-  font-weight: 500;
-  font-size: 11px;
-}
-.role-chevron {
-  font-size: 10px;
   color: #94a3b8;
-  margin-left: 1px;
-}
-.role-select {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  cursor: pointer;
-  width: 100%;
-  height: 100%;
+  user-select: none;
 }
 
 /* ChatGPT 圆形发送/停止按钮 */
@@ -1181,14 +1112,5 @@ h1 {
   height: 9px;
   background: currentColor;
   border-radius: 2px;
-}
-
-.composer-footer {
-  margin-top: 8px;
-  text-align: center;
-}
-.composer-footer small {
-  color: #94a3b8;
-  font-size: 11px;
 }
 </style>

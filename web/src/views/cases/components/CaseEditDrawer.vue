@@ -14,7 +14,6 @@ import {
   currentRequirement,
 } from "../../../stores/workspace";
 import {
-  AGENT_ROLES,
   CATEGORY_LABEL,
   COST_LABEL,
   SCENARIO_KIND_LABEL,
@@ -225,7 +224,7 @@ async function recheck(c: TestCase) {
         <button
           type="button"
           class="drawer-agent-btn reviewer"
-          :title="AGENT_ROLES.reviewer.label + '：检查用例并给出建议，不修改内容'"
+          title="检查用例并给出建议，不修改内容"
           @click="emit('dispatch-to-role', props.caseItem, 'reviewer')"
         >
           检查用例
@@ -233,7 +232,7 @@ async function recheck(c: TestCase) {
         <button
           type="button"
           class="drawer-agent-btn qa"
-          :title="AGENT_ROLES.qa_expert.label + '：按原文依据优化当前用例并保存'"
+          title="按原文依据优化当前用例并保存"
           @click="emit('dispatch-to-role', props.caseItem, 'qa_expert')"
         >
           优化用例

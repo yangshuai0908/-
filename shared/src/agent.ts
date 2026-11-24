@@ -18,6 +18,8 @@ export interface AgentArtifact {
 export interface AgentAction {
   tool: string
   title: string
+  args?: Record<string, any>
+  summary?: string
   data?: any
   projectId?: string
   requirementId?: string | null

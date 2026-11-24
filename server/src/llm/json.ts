@@ -3,6 +3,7 @@ import { chat, streamChat, type ChatMessage } from './client.js'
 import { cacheKey, readCache, writeCache } from './cache.js'
 import { config } from '../config.js'
 import { traceStep } from '../trace.js'
+import { AppError } from '../utils.js'
 
 /** 从模型输出里抠出第一个完整的 JSON 对象（容忍 Markdown 代码块和前后废话） */
 export function extractJson(text: string): unknown | null {
@@ -77,8 +78,9 @@ export class JsonParseError extends Error {
 export async function chatJson<T>(
   schema: z.ZodType<T>,
   messages: ChatMessage[],
-  opts: { label?: string; temperature?: number; maxTokens?: number; jsonMode?: boolean; noCache?: boolean } = {},
+  opts: { label?: string; temperature?: number; maxTokens?: number; jsonMode?: boolean; noCache?: boolean; signal?: AbortSignal } = {},
 ): Promise<T> {
+  if (opts.signal?.aborted) throw new AppError('任务已取消', 499)
   const label = opts.label ?? '模型输出'
   const key = opts.noCache || !config.llmCache ? null : cacheKey({
     model: config.model, baseUrl: config.baseUrl, messages,
@@ -102,7 +104,7 @@ export async function chatJson<T>(
   const raw = await traceStep(`${label}：模型请求`, {
     messages, model: config.model, temperature: opts.temperature ?? config.temperature,
     maxTokens: opts.maxTokens ?? config.maxTokens, thinking: config.thinking,
-  }, () => chat({ messages, temperature: opts.temperature, maxTokens: opts.maxTokens, jsonMode: opts.jsonMode }))
+  }, () => chat({ messages, temperature: opts.temperature, maxTokens: opts.maxTokens, jsonMode: opts.jsonMode, signal: opts.signal }))
 
   const first = extractJson(raw)
   if (first !== null) {
@@ -141,7 +143,7 @@ export async function chatJson<T>(
   const repaired = await traceStep(`${label}：JSON 修复重试`, {
     messages: repairMessages, model: config.model, temperature: 0.05,
     maxTokens: opts.maxTokens ?? config.maxTokens, validationError: detail,
-  }, () => chat({ messages: repairMessages, temperature: 0.05, maxTokens: opts.maxTokens, jsonMode: opts.jsonMode }))
+  }, () => chat({ messages: repairMessages, temperature: 0.05, maxTokens: opts.maxTokens, jsonMode: opts.jsonMode, signal: opts.signal }))
   const second = extractJson(repaired)
   if (second !== null) {
     const parsed = schema.safeParse(second)
@@ -228,14 +230,16 @@ export async function streamChatJson<T>(
     label?: string
     temperature?: number
     maxTokens?: number
+    signal?: AbortSignal
     onMessageDelta?: (delta: string) => void
   } = {},
 ): Promise<T> {
+  if (opts.signal?.aborted) throw new AppError('任务已取消', 499)
   const label = opts.label ?? '模型输出'
   const streamer = opts.onMessageDelta ? new JsonMessageStreamer(opts.onMessageDelta) : null
 
   const raw = await streamChat(
-    { messages, temperature: opts.temperature, maxTokens: opts.maxTokens },
+    { messages, temperature: opts.temperature, maxTokens: opts.maxTokens, signal: opts.signal },
     (chunk) => {
       if (streamer) streamer.feed(chunk)
     },
@@ -262,7 +266,7 @@ export async function streamChatJson<T>(
     },
   ]
 
-  const repaired = await chat({ messages: repairMessages, temperature: 0.05, maxTokens: opts.maxTokens })
+  const repaired = await chat({ messages: repairMessages, temperature: 0.05, maxTokens: opts.maxTokens, signal: opts.signal })
   const second = extractJson(repaired)
   if (second !== null) {
     const parsed = schema.safeParse(second)

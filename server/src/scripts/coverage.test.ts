@@ -27,14 +27,14 @@ function requirement(points: TestPoint[]): RequirementVersion {
   }
 }
 
-function generatedCase(id: string, pointId: string, scenarioId: string, analysisId = 'an1'): TestCase {
+function generatedCase(id: string, pointId: string, scenarioId: string, analysisId = 'an1', analysisUpdatedAt = '2026-11-23T00:00:01Z'): TestCase {
   return {
     id, projectId: 'p1', requirementId: 'req1', title: id, category: 'boundary', priority: 'P1',
     module: '数量', precondition: '', steps: [], expected: [], evidence: [], assumptions: [],
     businessConfirmation: '', businessConfirmer: '', assessment: blankAssessment(),
     origin: 'generated', updatedAt: '2026-11-23T00:00:02Z',
     source: {
-      runId: 'run1', analysisId, analysisUpdatedAt: '', pointId,
+      runId: 'run1', analysisId, analysisUpdatedAt, pointId,
       title: '', objective: '', reqIds: ['REQ-001'], scenarioId, scenarioKind: '',
     },
   }

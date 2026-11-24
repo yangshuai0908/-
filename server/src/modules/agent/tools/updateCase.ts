@@ -14,7 +14,7 @@ export const updateCaseTool = {
     if (ctx.currentRequirementId && existing.requirementId !== ctx.currentRequirementId)
       throw new AppError('用例不属于当前需求版本，请先切换到目标需求', 409)
     const input = Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null && value !== undefined))
-    const item = await updateCase(existing.id, input, 'agent')
+    const item = await updateCase(existing.id, input, 'agent', ctx.signal)
     return { title: `已保存用例「${item!.title}」`, data: { case: item, caseId: existing.id }, changes: ['cases'],
       artifact: { view: 'cases', requirementId: existing.requirementId, caseId: existing.id } }
   },

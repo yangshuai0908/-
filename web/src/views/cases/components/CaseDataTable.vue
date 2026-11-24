@@ -3,7 +3,6 @@ import { ref } from "vue";
 import { NButton, NTag, NSpin } from "naive-ui";
 import EvidenceBadge from "../../../components/EvidenceBadge.vue";
 import {
-  AGENT_ROLES,
   CATEGORY_COLOR,
   CATEGORY_LABEL,
   COST_COLOR,
@@ -109,7 +108,7 @@ function toggleExpandAll() {
         <n-tag size="tiny" :bordered="false" round>{{ cases.length }}</n-tag>
       </div>
       <div class="case-actions">
-        <n-button size="small" :disabled="!cases.length || generating" :title="AGENT_ROLES.reviewer.label + '：检查用例质量并保存报告，不修改用例'" @click="emit('review-library')">质量检查</n-button>
+        <n-button size="small" :disabled="!cases.length || generating" title="检查用例质量并保存报告，不修改用例" @click="emit('review-library')">质量检查</n-button>
         <n-button size="small" secondary @click="emit('add-case')">手动新增</n-button>
         <details class="more-tools">
           <summary>更多操作</summary>
@@ -352,7 +351,7 @@ function toggleExpandAll() {
                     <button
                       type="button"
                       class="case-agent-btn reviewer"
-                      :title="AGENT_ROLES.reviewer.label + '：检查这条用例并给出建议，不改写内容'"
+                      title="检查这条用例并给出建议，不改写内容"
                       @click.stop="emit('dispatch-to-role', c, 'reviewer')"
                     >
                       检查

@@ -40,7 +40,7 @@ const emit = defineEmits<{
         <button
           type="button"
           class="ask-agent-question-btn"
-          title="需求分析师：结合上下文整理待澄清问题"
+          title="结合上下文整理待澄清问题"
           @click="emit('askAgentForQuestions', section)"
         >
           整理澄清问题

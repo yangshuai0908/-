@@ -8,7 +8,7 @@ export const compareTool = {
   async execute(args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
     const from = scopedRequirement(ctx.projectId, args.fromReqId)
     const to = scopedRequirement(ctx.projectId, args.toReqId)
-    const report = await createCompareReport(ctx.projectId, from.id, to.id)
+    const report = await createCompareReport(ctx.projectId, from.id, to.id, ctx.signal)
     const stats = { added: 0, removed: 0, modified: 0, unchanged: 0 }
     for (const change of report.changes) stats[change.type]++
 

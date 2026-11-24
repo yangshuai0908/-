@@ -9,7 +9,7 @@ export const generateTool = {
   async execute(args: ToolArgs, ctx: ToolContext): Promise<ToolResult> {
     const requirement = scopedRequirement(ctx.projectId, args.requirementId ?? ctx.currentRequirementId)
     const categories = args.categories?.length ? args.categories : [...CATEGORIES]
-    const result = await generateConfirmedCases(requirement, categories)
+    const result = await generateConfirmedCases(requirement, categories, false, undefined, ctx.signal)
     return {
       changes: ['cases'],
       artifact: { view: 'cases', requirementId: requirement.id },

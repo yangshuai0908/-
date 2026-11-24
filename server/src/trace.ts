@@ -19,7 +19,7 @@ export interface WorkflowTrace {
   id: string
   requirementId: string
   projectId: string
-  kind: 'analysis' | 'generation' | 'point_edit' | 'case_edit' | 'assessment' | 'recheck'
+  kind: 'analysis' | 'generation' | 'point_edit' | 'case_edit' | 'assessment' | 'recheck' | 'review' | 'compare' | 'agent'
   status: 'running' | 'succeeded' | 'partial' | 'failed' | 'interrupted'
   startedAt: string
   finishedAt?: string
@@ -84,7 +84,7 @@ export async function traceWorkflow<T>(kind: WorkflowTrace['kind'], requirement:
       if (run.status === 'running') run.status = 'succeeded'
       return result
     } catch (error) {
-      run.status = 'failed'
+      run.status = error instanceof Error && 'status' in error && error.status === 499 ? 'interrupted' : 'failed'
       run.error = snapshot(error instanceof Error ? error.message : String(error))
       if (error instanceof Error) error.message = `${run.error}（追溯记录：${run.id}）`
       throw error
